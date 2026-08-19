@@ -157,9 +157,17 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   '';
 
   postFixup = ''
+    # APPIMAGE:asar 实证的深链注册钩子 —— zcode 启动时把
+    # Exec=process.execPath(裸二进制)写进 ~/.local/share/applications/zcode.desktop,
+    # 但注册逻辑 mX() 优先取 env.APPIMAGE 作为 Exec。指向 wrapper 后,自写文件
+    # 路由到完整 env(Wayland flags + PATH + LD_LIBRARY_PATH),菜单/浏览器回调
+    # 启动不再走裸路径;writeFileIfChanged 语义保证内容稳定后不再重写,无拉锯。
+    # electron-updater 的 AppImageUpdater 同名 env 仅 AppImage 模式读取,
+    # deb 构建的 feed 已指 localhost(上游自禁更新),不受影响
     wrapProgram "$out/bin/zcode" \
       "''${gappsWrapperArgs[@]}" \
       --set ZCODE_EXECUTABLE "$out/opt/ZCode/zcode" \
+      --set APPIMAGE "$out/bin/zcode" \
       --prefix PATH : ${
         lib.makeBinPath [
           desktop-file-utils
