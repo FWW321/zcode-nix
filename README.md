@@ -94,11 +94,7 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 
 ## 更新
 
-```bash
-cd pkgs/zcode && ./update.sh   # 重写 source.json(版本 + 双架构 hash)
-```
-
-上游 CDN 无 latest 指针、官网版本列表滞后、版本会跳号,脚本按当前版本锚点探测 `minor..+2 × patch 0..30`;major 跳版(如 4.0.0)需手动改锚点。
+上游版本由 GitHub Actions 每日自动跟踪(也可 Actions → update → Run workflow 手动触发):探测到新版 → 构建验证 → bot 提交 `zcode: bump to <version>`。major 跳版(如 4.0.0)超出探测范围,需手动改 source.json 锚点后跑 `./pkgs/zcode/update.sh`(探测逻辑见脚本头注释:上游 CDN 无 latest 指针、官网版本列表滞后、版本会跳号)。
 
 ## 致谢
 

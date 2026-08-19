@@ -1,0 +1,57 @@
+# 上游版本自动跟踪:定时跑 pkgs/zcode/update.sh(幂等,无新版 exit 0),
+# source.json 有变化 → 先构建验证 → commit + push。
+# 触达边界:aarch64 只经 prefetch 验 hash(runner 是 x86_64,不做跨架构构建)
+name: update
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # daily 04:23 UTC(错开整点)
+  workflow_dispatch: # 手动触发:Actions → update → Run workflow
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      # update.sh 的 nix-shell shebang 自带 curl/jq;
+      # 探测 ~93 个 HEAD 请求,无新版时在写文件前就 exit 0
+      - name: Probe upstream
+        run: ./pkgs/zcode/update.sh
+
+      - name: Detect change
+        id: diff
+        run: |
+          if git diff --quiet -- pkgs/zcode/source.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$(jq -r '."x86_64-linux".version' pkgs/zcode/source.json)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # prefetch 只验 hash;autoPatchelf 层面的问题(上游改了依赖布局等)在这里拦住,
+      # 坏版本不会进 main —— 宁可 workflow 红,不让用户 switch 撞墙
+      - name: Build verification
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+        run: nix build --impure --no-link .#zcode
+
+      - name: Commit & push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pkgs/zcode/source.json
+          git commit -m "zcode: bump to ${{ steps.diff.outputs.version }}"
+          git push
