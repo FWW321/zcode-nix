@@ -45,7 +45,9 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         env:
           NIXPKGS_ALLOW_UNFREE: "1"
-        run: nix build --impure --no-link .#zcode
+        run: |
+          nix build --impure --no-link .#zcode
+          nix flake check --impure
 
       - name: Commit & push
         if: steps.diff.outputs.changed == 'true'

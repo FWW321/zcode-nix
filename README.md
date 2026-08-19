@@ -92,6 +92,15 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 - **生效时机**:providers/MCP 改动需重启应用(启动时快照);agents/skills 定义变更需新会话
 - **`zcode://` scheme**:浏览器 OAuth 回跳依赖;HM 侧建议 `xdg.mimeApps.defaultApplications."x-scheme-handler/zcode" = "zcode.desktop"`(模块已内置)
 
+## 测试
+
+`nix flake check`(需 `NIXPKGS_ALLOW_UNFREE=1` + `--impure`,因上游 unfree)跑两条防线:
+
+- **zcode-shellcheck**:模块内嵌的全部 activation 脚本(渲染后的 `.data`)+ 校验器 + 测试本体过 shellcheck
+- **zcode-activation-dryrun**:真实 HM 求值渲染的 activation,打在沙箱 HOME 的仿真 GUI 状态上,断言四条性质——agents/commands 拷贝落位、sidecar GC(GUI 自建文件零接触)、providers/mcp 对账(builtin/`oauth` 槽位零接触、secret 渲染)、二跑幂等
+
+另:`normalizeSkillSource` 在 build 期校验每个 skill 源的 SKILL.md frontmatter(缺 name/description 直接构建失败——这类 skill 会被客户端**静默拒载**,不能等运行时发现)。
+
 ## 更新
 
 上游版本由 GitHub Actions 每日自动跟踪(也可 Actions → update → Run workflow 手动触发):探测到新版 → 构建验证 → bot 提交 `zcode: bump to <version>`。major 跳版(如 4.0.0)超出探测范围,需手动改 source.json 锚点后跑 `./pkgs/zcode/update.sh`(探测逻辑见脚本头注释:上游 CDN 无 latest 指针、官网版本列表滞后、版本会跳号)。

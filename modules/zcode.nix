@@ -112,30 +112,37 @@ let
   ));
 
   # path-like 字符串技能源包成 build 期校验的 derivation
-  # (programs.opencode 上游 normalizeSkill 同款)
+  # (programs.opencode 上游 normalizeSkill 同款 + frontmatter 校验)
+  # cp 而非 ln:源可能是 /home 下的本地路径,store 里放 symlink 会悬空。
+  # 坑:脚本里 toString 会丢纯 path 的依赖 context(闭包里没有源路径,沙箱
+  # 里 -d/-f 双 false)—— 源经 env 传入(自动入闭包),脚本读 env 值
   normalizeSkillSource =
     source:
-    pkgs.runCommandLocal "zcode-skill" { } ''
-      source=${lib.escapeShellArg (toString source)}
+    pkgs.runCommandLocal "zcode-skill" { skillSource = source; } ''
+      source=$skillSource
       if [[ -d "$source" ]]; then
-        ln -s "$source" "$out"
+        bash ${./skill-frontmatter-check.sh} "$source/SKILL.md"
+        mkdir -p "$out"
+        cp -a "$source"/. "$out"/
       elif [[ -f "$source" ]]; then
+        bash ${./skill-frontmatter-check.sh} "$source"
         mkdir "$out"
-        ln -s "$source" "$out/SKILL.md"
+        cp "$source" "$out/SKILL.md"
       else
         echo "zcode skill source must be a file or directory: $source" >&2
         exit 1
       fi
     '';
 
-  # 技能三态 → home.file 条目(内联文本 | 单文件 | 目录)
+  # 技能三态 → home.file 条目(内联文本 | 单文件 | 目录)。
+  # 文件/目录一律经 normalizeSkillSource:挂 frontmatter 校验 + 入 store;
+  # 内联文本是配置里手写的,所见即所得,不校验
   linkSkill =
     name: content:
-    if lib.isPath content && lib.pathIsDirectory content then
-      { ".zcode/skills/${name}" = { source = content; recursive = true; }; }
+    if (lib.isPath content && lib.pathIsDirectory content)
+      || (lib.isString content && lib.hm.strings.isPathLike content) then
+      { ".zcode/skills/${name}" = { source = normalizeSkillSource content; recursive = true; }; }
     else if lib.isPath content then
-      { ".zcode/skills/${name}/SKILL.md".source = content; }
-    else if lib.isString content && lib.hm.strings.isPathLike content then
       { ".zcode/skills/${name}" = { source = normalizeSkillSource content; recursive = true; }; }
     else
       { ".zcode/skills/${name}/SKILL.md".text = content; };
