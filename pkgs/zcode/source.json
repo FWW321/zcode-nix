@@ -1,0 +1,16 @@
+{
+  "aarch64-linux": {
+    "version": "3.8.1",
+    "src": {
+      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/linux-arm64/ZCode-3.8.1-linux-arm64.deb",
+      "hash": "sha256-vt/rRfh+xs/QJXtUFsMLyUOX5sfTyC052gjDeai3ZWk="
+    }
+  },
+  "x86_64-linux": {
+    "version": "3.8.1",
+    "src": {
+      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/linux-x64/ZCode-3.8.1-linux-x64.deb",
+      "hash": "sha256-WHGHdinrVvYIJRqV76kr+MKuBkXj1nrg3LXAISHkVXU="
+    }
+  }
+}
