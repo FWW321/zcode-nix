@@ -19,12 +19,17 @@
         "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      # zcode 是闭源包(license: unfree),legacyPackages 的默认 config 在
+      # eval 期即拒绝求值(2026-08-22 实测:packages output 令 flake check
+      # 全红)。本 flake 的 packages/checks 需显式放行;消费者仍受自身
+      # nixpkgs.config.allowUnfree 约束(与 nixpkgs unfree 包惯例一致)
+      pkgsFor = system: import nixpkgs { inherit system; config.allowUnfree = true; };
     in
     {
       packages = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
         in
         {
           zcode = pkgs.callPackage ./pkgs/zcode { };
@@ -49,7 +54,7 @@
       checks = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
 
           # 真实 HM 求值:完整 option 合并 + DAG 渲染,夹具数据打满全部选项族
           hmConfig = home-manager.lib.homeManagerConfiguration {
@@ -62,7 +67,8 @@
                 home.stateVersion = "26.05";
                 programs.zcode = {
                   enable = true;
-                  # 测试 pkgs 无 zcode(overlay 归消费者挂),显式置空
+                  # 置空:不把 Electron 大包拉进 checks 闭包(自含默认已可
+                  # 求值,但求值≠必装,夹具聚焦 activation 脚本本身)
                   package = null;
                   agents.robot = {
                     description = "dry-run fixture agent";

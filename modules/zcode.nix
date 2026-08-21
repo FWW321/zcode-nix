@@ -434,7 +434,15 @@ in
   options.programs.zcode = {
     enable = lib.mkEnableOption "zcode";
 
-    package = lib.mkPackageOption pkgs "zcode" { nullable = true; };
+    # 自含默认:消费方 pkgs 直接 callPackage 本仓库表达式,import 模块即用,
+    # 不依赖(也不要求)本 flake 的 overlay;overlay 仍提供 pkgs.zcode 但仅为
+    # 可选糖。null = 只出配置不装包
+    package = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = pkgs.callPackage ../pkgs/zcode { };
+      defaultText = lib.literalExpression "pkgs.callPackage ./pkgs/zcode { }";
+      description = "ZCode package. Defaults to building the in-repo expression with the consuming package set; set to null to manage installation yourself.";
+    };
 
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
