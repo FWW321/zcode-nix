@@ -12,7 +12,11 @@
   };
 
   outputs =
-    { self, nixpkgs, home-manager }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -23,7 +27,12 @@
       # eval 期即拒绝求值(2026-08-22 实测:packages output 令 flake check
       # 全红)。本 flake 的 packages/checks 需显式放行;消费者仍受自身
       # nixpkgs.config.allowUnfree 约束(与 nixpkgs unfree 包惯例一致)
-      pkgsFor = system: import nixpkgs { inherit system; config.allowUnfree = true; };
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
     in
     {
       packages = forAllSystems (
@@ -47,6 +56,22 @@
         zcode = ./modules/zcode.nix;
         default = self.homeManagerModules.zcode;
       };
+
+      # nix-unit:eval 期断言负例(MCP 判别联合/路径类),CI 独立步骤跑
+      # (测试经 homeManagerConfiguration 全 eval,与 flake.nix checks 的
+      # 行为级互补;不进沙箱 checks —— HM 求值需要真实 pkgs 环境)
+      tests = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          mcp-assertions = import ./tests/mcp-assertions.nix {
+            inherit pkgs;
+            home-manager = home-manager;
+          };
+        }
+      );
 
       # ── checks:内嵌 activation 脚本与 skill 校验的防线 ──
       # 背景:模块把 bash 嵌进 Nix 字符串,没有编译器兜底;2026-08-20 交付过
@@ -104,35 +129,40 @@
           # .data 是渲染后的纯 bash(store 路径已内插),shellcheck/干跑都用它;
           # writeText 的字符串上下文连带 farm/manifest 依赖一起进闭包
           act = hmConfig.config.home.activation;
-          render =
-            name: pkgs.writeText "zcode-${name}-rendered" act.${name}.data;
+          render = name: pkgs.writeText "zcode-${name}-rendered" act.${name}.data;
         in
         {
           # 1) 静态:全部内嵌脚本 + 校验器 + 干跑测试本体过 shellcheck
-          zcode-shellcheck = pkgs.runCommand "zcode-shellcheck" {
-            nativeBuildInputs = [ pkgs.shellcheck ];
-          } ''
-            shellcheck -s bash \
-              ${./modules/skill-frontmatter-check.sh} \
-              ${./tests/activation-dryrun.sh} \
-              ${render "syncZcodeAgents"} \
-              ${render "syncZcodeProviders"} \
-              ${render "syncZcodeMcp"}
-            touch "$out"
-          '';
+          zcode-shellcheck =
+            pkgs.runCommand "zcode-shellcheck"
+              {
+                nativeBuildInputs = [ pkgs.shellcheck ];
+              }
+              ''
+                shellcheck -s bash \
+                  ${./modules/skill-frontmatter-check.sh} \
+                  ${./tests/activation-dryrun.sh} \
+                  ${render "syncZcodeAgents"} \
+                  ${render "syncZcodeProviders"} \
+                  ${render "syncZcodeMcp"}
+                touch "$out"
+              '';
 
           # 2) 动态:沙箱 HOME 打仿真 GUI 状态,断言拷贝/GC/零接触/幂等四条性质
-          zcode-activation-dryrun = pkgs.runCommand "zcode-activation-dryrun" {
-            nativeBuildInputs = [ pkgs.jq ];
-          } ''
-            bash ${./tests/activation-dryrun.sh} \
-              ${render "syncZcodeAgents"} \
-              ${render "syncZcodeProviders"} \
-              ${render "syncZcodeMcp"} \
-              ${./modules/skill-frontmatter-check.sh} \
-              ${hmConfig.config.home.file.".zcode/skills/fixture".source}
-            touch "$out"
-          '';
+          zcode-activation-dryrun =
+            pkgs.runCommand "zcode-activation-dryrun"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+              }
+              ''
+                bash ${./tests/activation-dryrun.sh} \
+                  ${render "syncZcodeAgents"} \
+                  ${render "syncZcodeProviders"} \
+                  ${render "syncZcodeMcp"} \
+                  ${./modules/skill-frontmatter-check.sh} \
+                  ${hmConfig.config.home.file.".zcode/skills/fixture".source}
+                touch "$out"
+              '';
 
           # 3) options 参考文档:34 个 option 的 description 真源自动渲染
           # (nixosOptionsDoc — HM 官方文档同款;警告即失败,description
@@ -153,9 +183,12 @@
               doc = pkgs.nixosOptionsDoc {
                 documentType = "none";
                 options.programs.zcode = hmConfig.options.programs.zcode;
-                transformOptions = opt: opt // {
-                  declarations = map transformDeclaration opt.declarations;
-                };
+                transformOptions =
+                  opt:
+                  opt
+                  // {
+                    declarations = map transformDeclaration opt.declarations;
+                  };
               };
             in
             pkgs.runCommand "zcode-options-doc" { } ''

@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - name: nix-unit tests (eval assertion negatives)
+        run: nix shell nixpkgs#nix-unit -c nix-unit --flake .#tests.x86_64-linux --show-trace
+      - name: flake checks (shellcheck + activation dry-run + options doc)
+        run: nix flake check -L
