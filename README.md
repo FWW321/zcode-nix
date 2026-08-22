@@ -27,6 +27,13 @@ nixpkgs.overlays = [ inputs.zcode-nix.overlays.default ];
 
 `programs.zcode` 提供声明式管理:自定义模型供应商、MCP 服务器、subagents、skills、commands、全局 AGENTS.md。
 
+全部 option 参考文档(description 真源自动渲染,声明带源码链接):
+
+```console
+nix build github:FWW321/zcode-nix#checks.x86_64-linux.zcode-options-doc
+cat ./result/options.md   # CommonMark;options.json 供工具管线
+```
+
 ```nix
 inputs.zcode-nix.url = "github:FWW321/zcode-nix";
 

@@ -41,8 +41,10 @@
         zcode = final.callPackage ./pkgs/zcode { };
       };
 
+      # 传路径而非 import 结果:模块系统记真实 _file → 消费者的 option 文档/
+      # 报错定位指向本仓文件而非 <unknown-file>
       homeManagerModules = {
-        zcode = import ./modules/zcode.nix;
+        zcode = ./modules/zcode.nix;
         default = self.homeManagerModules.zcode;
       };
 
@@ -131,6 +133,35 @@
               ${hmConfig.config.home.file.".zcode/skills/fixture".source}
             touch "$out"
           '';
+
+          # 3) options 参考文档:34 个 option 的 description 真源自动渲染
+          # (nixosOptionsDoc — HM 官方文档同款;警告即失败,description
+          # 缺失会被 check 期拦下)。只收录本模块命名空间,HM 自身
+          # option 树已有官方文档,不重复
+          zcode-options-doc =
+            let
+              root = toString self.outPath;
+              rel = p: nixpkgs.lib.removePrefix "${root}/" (toString p);
+              # 声明位置 → GitHub 链接;非本仓声明 assert 拦下
+              transformDeclaration =
+                d:
+                assert nixpkgs.lib.hasPrefix root (toString d);
+                {
+                  name = rel d;
+                  url = "https://github.com/FWW321/zcode-nix/blob/main/${rel d}";
+                };
+              doc = pkgs.nixosOptionsDoc {
+                documentType = "none";
+                options.programs.zcode = hmConfig.options.programs.zcode;
+                transformOptions = opt: opt // {
+                  declarations = map transformDeclaration opt.declarations;
+                };
+              };
+            in
+            pkgs.runCommand "zcode-options-doc" { } ''
+              install -Dm644 ${doc.optionsCommonMark} $out/options.md
+              install -Dm644 ${doc.optionsJSON}/share/doc/nixos/options.json $out/options.json
+            '';
         }
       );
     };
