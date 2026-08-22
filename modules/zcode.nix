@@ -314,9 +314,13 @@ let
 
   # ── agents:结构化定义 → frontmatter+正文 渲染 ──
   # YAML 标量渲染:字符串双引号转义(GUI 同款),bool/int 原样,列表 flow 风格
+  # bool 必须显式 true/false:Nix 的 toString false="" / true="1"(shell 语义),
+  # 直排会把 false 渲染成 YAML null(= 客户端默认值,配置静默蒸发)、
+  # true 渲染成整数 1(schema 未必收)——injectAgentsMd 实测踩中
   yamlScalar =
     v:
-    if lib.isBool v || lib.isInt v || lib.isFloat v then toString v
+    if lib.isBool v then (if v then "true" else "false")
+    else if lib.isInt v || lib.isFloat v then toString v
     else if lib.isList v then "[${lib.concatStringsSep ", " (map (x: "\"${lib.escape [ "\\" "\"" ] (toString x)}\"") v)}]"
     else if lib.isString v then "\"${lib.escape [ "\\" "\"" ] v}\""
     else throw "zcode agents: unsupported frontmatter value ${builtins.toJSON v}";
