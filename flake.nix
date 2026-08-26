@@ -144,7 +144,8 @@
                   ${./tests/activation-dryrun.sh} \
                   ${render "syncZcodeAgents"} \
                   ${render "syncZcodeProviders"} \
-                  ${render "syncZcodeMcp"}
+                  ${render "syncZcodeMcp"} \
+                  ${render "pruneZcodeDeepLink"}
                 touch "$out"
               '';
 
@@ -159,6 +160,7 @@
                   ${render "syncZcodeAgents"} \
                   ${render "syncZcodeProviders"} \
                   ${render "syncZcodeMcp"} \
+                  ${render "pruneZcodeDeepLink"} \
                   ${./modules/skill-frontmatter-check.sh} \
                   ${hmConfig.config.home.file.".zcode/skills/fixture".source}
                 touch "$out"

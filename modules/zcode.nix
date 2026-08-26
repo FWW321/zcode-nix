@@ -595,6 +595,25 @@ in
     # zcode 永久等待(实测 2026-08-19)
     xdg.mimeApps.defaultApplications."x-scheme-handler/zcode" = "zcode.desktop";
 
+    # ── 自写 desktop 文件死链清理(2026-08-26 实测踩坑)──
+    # app 启动时把 wrapper 的 store 绝对路径写进
+    # ~/.local/share/applications/zcode.desktop(APPIMAGE 注入,优先取 env);
+    # 该目录优先级高于 profile,会遮蔽包里版本无关的 Exec=zcode 入口。
+    # 版本升级 + 旧 store path GC 后,菜单点击执行死路径 → 静默无反应,
+    # 而 app 只有成功启动一次才会重写该文件 —— 鸡生蛋。
+    # 防线:activation 时 Exec 指向的 /nix/store 路径已不存在 → 删文件,
+    # 让 profile 的入口接管;路径活着(app 正常自管)→ 零接触
+    home.activation.pruneZcodeDeepLink = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      _zcode_desktop="''${XDG_DATA_HOME:-''${HOME}/.local/share}/applications/zcode.desktop"
+      if [[ -f "$_zcode_desktop" ]]; then
+        _zcode_exec=$(sed -n 's|^Exec="\(/nix/store/[^"]*\)".*|\1|p' "$_zcode_desktop")
+        if [[ -n "$_zcode_exec" && ! -e "$_zcode_exec" ]]; then
+          rm -f "$_zcode_desktop"
+          echo "zcode: removed stale self-registered desktop entry (dead Exec: $_zcode_exec)"
+        fi
+      fi
+    '';
+
     home.file =
       {
         ".zcode/AGENTS.md" =

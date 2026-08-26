@@ -1,11 +1,11 @@
 # shellcheck shell=bash
-# programs.zcode activation 沙箱干跑:真实 HM 求值渲染出的三个 activation
+# programs.zcode activation 沙箱干跑:真实 HM 求值渲染出的四个 activation
 # 脚本,打在临时 HOME 的仿真 GUI 状态上,断言四条性质 ——
 #   1) agents/commands:拷贝落位 + sidecar 记名
 #   2) sidecar GC:旧 nix 部署回收,GUI 自建文件零接触
 #   3) providers/mcp:upsert 带 nixManaged 标记 + builtin/GUI 条目零接触
 #   4) 幂等:二跑不改文件(对账无漂移)
-# 用法: activation-dryrun.sh <agentsScript> <providersScript> <mcpScript> <validator> <skillOut>
+# 用法: activation-dryrun.sh <agentsScript> <providersScript> <mcpScript> <pruneScript> <validator> <skillOut>
 # 背景:2026-08-20 曾交付一个 bash `local a=x b=$a` 同语句引用坑(set -u 下
 # unbound)导致 activation 静默失败 —— 本测试在 bash -euo pipefail 下执行渲染
 # 后脚本,同族问题在 flake check 期即暴露。
@@ -14,8 +14,9 @@ set -euo pipefail
 agents_script=$1
 providers_script=$2
 mcp_script=$3
-validator=$4
-skill_out=$5
+prune_script=$4
+validator=$5
+skill_out=$6
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -43,6 +44,19 @@ cat > "$HOME/.zcode/cli/config.json" <<'EOF'
 }}}
 EOF
 
+# 自写 desktop 文件双 fixture:死链(Exec 指向不存在的 store 路径,GC 目标)
+# 与活链(Exec 指向真实存在的文件,零接触)
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/zcode.desktop" <<EOF
+[Desktop Entry]
+Exec="/nix/store/0000000000000000000000000000000-zcode-3.8.1/bin/zcode" %U
+EOF
+live_exec=$validator
+cat > "$HOME/.local/share/applications/other.desktop" <<EOF
+[Desktop Entry]
+Exec="$live_exec" %U
+EOF
+
 # ── 校验器正/负例(缺 description / 无 frontmatter 必须被拒)──
 bash "$validator" "$skill_out/SKILL.md" || fail "validator 拒绝了合法 fixture"
 bad=$(mktemp)
@@ -55,6 +69,7 @@ if bash "$validator" "$bad" 2>/dev/null; then fail "validator 放行了无 front
 bash -euo pipefail "$agents_script"
 bash -euo pipefail "$providers_script"
 bash -euo pipefail "$mcp_script"
+bash -euo pipefail "$prune_script"
 
 # ── 断言 1:agents/commands 拷贝落位(普通文件,非 symlink)──
 [[ -f "$HOME/.zcode/agents/robot.md" && ! -L "$HOME/.zcode/agents/robot.md" ]] \
@@ -91,16 +106,32 @@ grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "GUI 自建 agent �
   || fail "stale mcp 未被 GC"
 [[ "$(stat -c %a "$HOME/.zcode/cli/config.json")" == "600" ]] || fail "cli/config.json 未收紧 600"
 
+# ── 断言 3c:自写 desktop 死链清理 ──
+[[ ! -e "$HOME/.local/share/applications/zcode.desktop" ]] \
+  || fail "死链 zcode.desktop 未被清理"
+grep -q "^Exec=\"$live_exec\"" "$HOME/.local/share/applications/other.desktop" \
+  || fail "非 zcode 的 desktop 文件被动了(清理必须只点名 zcode.desktop)"
+
 # ── 断言 4:幂等(二跑零漂移)──
+# 同时覆盖正例:app 刚自注册的活链 zcode.desktop(Exec 指向真实路径),
+# 二跑必须零接触 —— 清理只杀死链,不与 app 的自管拉锯
 p1=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
 m1=$(md5sum "$HOME/.zcode/cli/config.json" | cut -d' ' -f1)
+cat > "$HOME/.local/share/applications/zcode.desktop" <<EOF
+[Desktop Entry]
+Exec="$validator" "--enable-features=WaylandWindowDecorations" %U
+EOF
+d1=$(md5sum "$HOME/.local/share/applications/zcode.desktop" | cut -d' ' -f1)
 bash -euo pipefail "$agents_script"
 bash -euo pipefail "$providers_script"
 bash -euo pipefail "$mcp_script"
+bash -euo pipefail "$prune_script"
 p2=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
 m2=$(md5sum "$HOME/.zcode/cli/config.json" | cut -d' ' -f1)
 [[ "$p1" == "$p2" ]] || fail "providers 二跑漂移"
 [[ "$m1" == "$m2" ]] || fail "mcp 二跑漂移"
 grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "二跑动了 GUI 文件"
+d2=$(md5sum "$HOME/.local/share/applications/zcode.desktop" | cut -d' ' -f1)
+[[ "$d1" == "$d2" ]] || fail "活链 zcode.desktop 二跑被动了(只该清理死链)"
 
 echo "activation dry-run: all assertions passed"
