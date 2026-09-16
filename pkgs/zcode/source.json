@@ -1,16 +1,16 @@
 {
   "aarch64-linux": {
-    "version": "3.12.1",
+    "version": "3.12.2",
     "src": {
-      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.12.1/linux-arm64/ZCode-3.12.1-linux-arm64.deb",
-      "hash": "sha256-G4R24EJvX2GnEx8AoTdAPxjTnmgHXqO6uzkEXA+f/YM="
+      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.12.2/linux-arm64/ZCode-3.12.2-linux-arm64.deb",
+      "hash": "sha256-EYmMc+cAhG+0+aZZKvPcWOzbZMxxqbwE3VlLlmKp6xo="
     }
   },
   "x86_64-linux": {
-    "version": "3.12.1",
+    "version": "3.12.2",
     "src": {
-      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.12.1/linux-x64/ZCode-3.12.1-linux-x64.deb",
-      "hash": "sha256-TR4c7/yPUeGduRE8Iw4JzqNc7cFPZ9TX7zTnDpS5F+Q="
+      "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.12.2/linux-x64/ZCode-3.12.2-linux-x64.deb",
+      "hash": "sha256-IVfMbTYmTX3QJJBQGd7npReWAygeVC9PR/z0pZvt1ZI="
     }
   }
 }
