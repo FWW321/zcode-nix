@@ -23,16 +23,8 @@
         "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      # zcode 是闭源包(license: unfree),legacyPackages 的默认 config 在
-      # eval 期即拒绝求值(2026-08-22 实测:packages output 令 flake check
-      # 全红)。本 flake 的 packages/checks 需显式放行;消费者仍受自身
-      # nixpkgs.config.allowUnfree 约束(与 nixpkgs unfree 包惯例一致)
-      pkgsFor =
-        system:
-        import nixpkgs {
-          inherit system;
-          config.allowUnfree = true;
-        };
+      # zcode 上游已开源(license: asl20),无 unfree 求值限制
+      pkgsFor = system: import nixpkgs { inherit system; };
     in
     {
       packages = forAllSystems (

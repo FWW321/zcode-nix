@@ -43,11 +43,9 @@ jobs:
       # 坏版本不会进 main —— 宁可 workflow 红,不让用户 switch 撞墙
       - name: Build verification
         if: steps.diff.outputs.changed == 'true'
-        env:
-          NIXPKGS_ALLOW_UNFREE: "1"
         run: |
-          nix build --impure --no-link .#zcode
-          nix flake check --impure
+          nix build --no-link .#zcode
+          nix flake check
 
       - name: Commit & push
         if: steps.diff.outputs.changed == 'true'

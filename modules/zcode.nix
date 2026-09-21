@@ -601,6 +601,9 @@ in
     # 该目录优先级高于 profile,会遮蔽包里版本无关的 Exec=zcode 入口。
     # 版本升级 + 旧 store path GC 后,菜单点击执行死路径 → 静默无反应,
     # 而 app 只有成功启动一次才会重写该文件 —— 鸡生蛋。
+    # 3.14.1 起 app 经 wrapper 启动即自清理(深链注册探测到系统级条目,
+    # 见 pkgs/zcode/default.nix postFixup 注释),本段降级为兜底:覆盖
+    # 3.14.1 之前写下的遗留条目、以及绕过 wrapper 裸跑 app 产生的条目。
     # 防线:activation 时 Exec 指向的 /nix/store 路径已不存在 → 删文件,
     # 让 profile 的入口接管;路径活着(app 正常自管)→ 零接触
     home.activation.pruneZcodeDeepLink = lib.hm.dag.entryAfter [ "writeBoundary" ] ''

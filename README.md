@@ -2,7 +2,7 @@
 
 [ZCode](https://zcode.z.ai)(智谱 GLM 官方 ADE,Agentic Development Environment,Electron 桌面端)的 Nix 打包与 [Home Manager](https://github.com/nix-community/home-manager) 模块。
 
-> ⚠️ ZCode 上游闭源分发,包标记为 `unfree`,使用前需在配置里放行(`nixpkgs.config.allowUnfree = true`)。临时试用:`NIXPKGS_ALLOW_UNFREE=1 nix build --impure github:FWW321/zcode-nix`。
+上游已开源:[zai-org/ZCode](https://github.com/zai-org/ZCode)(Apache-2.0,含桌面端/Web/Agent CLI 源码),本仓库的打包决策均以其源码复核。仍分发官方预编译 `.deb` 而非源码构建 —— 官方渠道鉴权附带 1.5x 模型额度,自构建客户端没有。
 
 ## 包
 
@@ -101,7 +101,7 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 
 ## 测试
 
-`nix flake check`(需 `NIXPKGS_ALLOW_UNFREE=1` + `--impure`,因上游 unfree)跑两条防线:
+`nix flake check` 跑两条防线:
 
 - **zcode-shellcheck**:模块内嵌的全部 activation 脚本(渲染后的 `.data`)+ 校验器 + 测试本体过 shellcheck
 - **zcode-activation-dryrun**:真实 HM 求值渲染的 activation,打在沙箱 HOME 的仿真 GUI 状态上,断言四条性质——agents/commands 拷贝落位、sidecar GC(GUI 自建文件零接触)、providers/mcp 对账(builtin/`oauth` 槽位零接触、secret 渲染)、二跑幂等
