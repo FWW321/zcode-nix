@@ -61,6 +61,14 @@ let
   jq = "${pkgs.jq}/bin/jq";
 
   # ── providers:选项 → v2/config.json 对账 manifest ──
+  # 模型 reasoning 走双通道注入(GUI 与 agent 各读一处,源码实证 2026-09-22):
+  #   - v2/config.json models.<m>.reasoning {enabled,variants,defaultVariant}
+  #     → 桌面读取器(legacyZCodeConfigProviderReader)喂 GUI 模型选择器
+  #   - v2/provider_config.json config.modelConfigRules.providerModelRules 的
+  #     optionSpecs.reasoningLevel {values,map} → agent 直读该文件
+  #     (bootstrap auth-login.ts PERSONAL_PROVIDER_CONFIG_FILE_NAME),values
+  #     供 resolveRegistryThoughtLevel 校验档名,map 是 wire 翻译表达式
+  #     (compileModelOptionMaps)——没有它 agents 的 thoughtLevel 会被静默吞掉
   providerManifest = pkgs.writeText "zcode-provider-manifest.json" (builtins.toJSON (
     lib.mapAttrsToList (name: p: {
       id = "custom:${name}";
@@ -70,13 +78,32 @@ let
         inherit (p) kind;
         options.baseURL = p.baseURL;
         source = "custom";
-        models = lib.mapAttrs (_: m: {
-          limit = {
-            inherit (m) context;
-            inherit (m) output;
-          };
-        }) p.models;
+        models = lib.mapAttrs (
+          _: m:
+          {
+            limit = {
+              inherit (m) context;
+              inherit (m) output;
+            };
+          }
+          // (lib.optionalAttrs (m.reasoning != null) {
+            # values 末位即默认档(provider-registry-selection.ts 的
+            # toModelOption:defaultLevel = values.at(-1)),顺序有语义
+            reasoning = {
+              enabled = true;
+              variants = m.reasoning.levels;
+              defaultVariant = lib.last m.reasoning.levels;
+            };
+          })
+        ) p.models;
       };
+      # agent 侧 personal 规则(与 template 分离:两者文件与 schema 都不同)
+      reasoningRules = lib.mapAttrsToList (mid: m: {
+        providerId = "custom:${name}";
+        modelId = mid;
+        inherit (m.reasoning) map;
+        values = m.reasoning.levels;
+      }) (lib.filterAttrs (_: m: m.reasoning != null) p.models);
     }) cfg.providers
   ));
 
@@ -265,6 +292,45 @@ let
         type = lib.types.ints.positive;
         description = "Max output tokens.";
       };
+      # 没有这份元数据,agents 的 thoughtLevel 会被 resolveRegistryThoughtLevel
+      # 静默吞掉(开源源码实证);上游 catalog 对 MiniMax 等第三方模型普遍
+      # reasoning: null,自定义 provider 想用思考档只能自己声明
+      reasoning = lib.mkOption {
+        type = lib.types.nullOr providerReasoningModule;
+        default = null;
+        description = ''
+          Thinking-level metadata for this model. Without it
+          {option}`programs.zcode.agents.<name>.thoughtLevel` is silently
+          ignored for custom models. Injected into both the GUI-side
+          (`v2/config.json` `reasoning.variants`) and the agent-side
+          (`v2/provider_config.json` `optionSpecs.reasoningLevel`).
+        '';
+      };
+    };
+  };
+
+  providerReasoningModule = lib.types.submodule {
+    options = {
+      levels = lib.mkOption {
+        type = lib.types.nonEmptyListOf lib.types.str;
+        description = ''
+          Level names accepted by this model (e.g. `["low" "high" "max"]`).
+          Order matters: the last entry is the default level
+          (source-verified: `defaultLevel = values.at(-1)`).
+        '';
+      };
+      map = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        description = ''
+          Wire-translation expression: evaluated with `reasoningLevel` bound
+          to the chosen level, producing the request-body patch. Catalog
+          examples (pick per endpoint dialect):
+            GLM anthropic   : `{ "thinking": { "type": "adaptive" }, "output_config": { "effort": reasoningLevel } }`
+            OpenAI          : `{ "reasoning_effort": reasoningLevel }`
+            OpenRouter      : `{ "reasoning": { "effort": reasoningLevel } }`
+            boolean toggles : `{ "enable_thinking": reasoningLevel != "disabled" }`
+        '';
+      };
     };
   };
 
@@ -385,7 +451,7 @@ let
         description = ''
           Fully-qualified model reference, GUI-verified format:
           `custom:<url-encoded-provider-id>:<model>`, e.g.
-          `custom:custom%3Aminimax:MiniMax-M3` (NOT the `<provider>/<model>`
+          `custom:custom%3Amy-provider:My-Model` (NOT the `<provider>/<model>`
           slash form the docs suggest). `null`/`inherit` follows the main
           agent's model.
         '';
@@ -399,9 +465,14 @@ let
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
-        Thinking effort; only effective with an explicit `model`. Kept a
-        free string on purpose: the set of valid levels is model-dependent
-        (GLM: low/high/max/nothink; GPT: low/medium/high/xhigh; DeepSeek V4:
+        Thinking effort. Two preconditions, both source-verified:
+        (1) only effective with an explicit `model`; (2) that model must
+        carry thinking-level metadata — catalog builtin models
+        (e.g. GLM via the OAuth slot) have it, but custom-provider models
+        do not unless `providers.<name>.models.<m>.reasoning` is set,
+        otherwise the level is silently dropped. Kept a free string on
+        purpose: the set of valid levels is model-dependent (GLM:
+        low/high/max/nothink; GPT: low/medium/high/xhigh; DeepSeek V4:
         high/max) — an enum here would wrongly reject valid combinations.
       '';
     };
@@ -527,7 +598,7 @@ in
         Hand-written files must include both `name` and `description` in the
         frontmatter — missing either is silently ignored by zcode. The
         `model` format is `custom:<url-encoded-provider-id>:<model>`, e.g.
-        `custom:custom%3Aminimax:MiniMax-M3`. Keep filename and frontmatter
+        `custom:custom%3Amy-provider:My-Model`. Keep filename and frontmatter
         `name` in sync: the registry dedupes by frontmatter name — a second
         file declaring an existing name is silently dropped (verified
         2026-08-20). The module always derives both from the attrset key.
@@ -584,6 +655,9 @@ in
         never touched). Reconciled entries are fully nix-owned: GUI edits to
         them are reverted on next switch; delete the entry and recreate it in
         the GUI (without the `nixManaged` marker) to hand it over.
+        Models with `reasoning` set are additionally reconciled into
+        {file}`~/.zcode/v2/provider_config.json` personal rules (agent-side
+        thinking-level specs; sidecar-tracked, GUI fields preserved).
       '';
     };
   };
@@ -755,7 +829,74 @@ in
           rm -f "$work"
         fi
       }
+
+      # ── reasoning 第二通道:agent 直读的 personal 规则(v2/provider_config.json)──
+      # 文件 schema 是 strict 的,不能在规则里塞 nixManaged 标记 → 所有权靠
+      # sidecar(provider_config.nix-managed)记 (providerId|modelId) 名单:
+      #   - upsert 只写 config.optionSpecs.reasoningLevel 子树,合并保留
+      #     规则里其余字段(GUI 写的 contextWindow 等)
+      #   - GC 只摘 sidecar 名单内、且已不在 options 的 reasoningLevel;
+      #     摘完 config 清空的规则整条回收(只可能由本模块创建),
+      #     仍有 GUI 字段的规则保留 —— GUI 产权零接触
+      #   - 不在 sidecar 的规则(GUI 自建)永不修改
+      _zcode_reasoning_sync() {
+        local pc="''${HOME}/.zcode/v2/provider_config.json"
+        [[ -f "$pc" ]] || { echo "zcode: v2/provider_config.json 不存在(应用未首启),跳过 reasoning 注入"; return 0; }
+
+        local work
+        work=$(mktemp "$pc.nixrxXXXXXX") || return 1
+        cp "$pc" "$work"
+
+        local sidecar="''${pc%.*}.nix-managed"
+        local new="$sidecar.tmp"
+        : > "$new" || return 1
+
+        # 当前名单先行落盘(GC 的 keep 集合)
+        local entry pid mid
+        while IFS= read -r entry; do
+          printf '%s|%s\n' "$(${jq} -r '.providerId' <<<"$entry")" "$(${jq} -r '.modelId' <<<"$entry")" >> "$new"
+        done < <(${jq} -c '[.[] | .reasoningRules[]?] | unique_by(.providerId + "|" + .modelId) | .[]' ${providerManifest})
+
+        if [[ -f "$sidecar" ]]; then
+          while IFS='|' read -r pid mid; do
+            [[ -n "$pid" && -n "$mid" ]] || continue
+            grep -qxF "$pid|$mid" "$new" && continue
+            ${jq} --arg pid "$pid" --arg mid "$mid" '
+              .config.modelConfigRules.providerModelRules |= map(
+                if .providerId == $pid and .modelId == $mid then
+                  (del(.config.optionSpecs.reasoningLevel)
+                   | if .config == {} or .config == {optionSpecs:{}} then empty else . end)
+                else . end)' \
+              "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+          done < "$sidecar"
+        fi
+
+        while IFS= read -r entry; do
+          pid=$(${jq} -r '.providerId' <<<"$entry")
+          mid=$(${jq} -r '.modelId' <<<"$entry")
+          ${jq} --arg pid "$pid" --arg mid "$mid" \
+            --argjson vals "$(${jq} -c '.values' <<<"$entry")" \
+            --arg map "$(${jq} -r '.map' <<<"$entry")" '
+            .config.modelConfigRules.providerModelRules |= (
+              if any(.[]?; .providerId == $pid and .modelId == $mid) then
+                map(if .providerId == $pid and .modelId == $mid
+                    then .config.optionSpecs.reasoningLevel = {values: $vals, map: $map}
+                    else . end)
+              else
+                . + [{providerId: $pid, modelId: $mid, config: {optionSpecs: {reasoningLevel: {values: $vals, map: $map}}}}]
+              end)' \
+            "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+        done < <(${jq} -c '[.[] | .reasoningRules[]?] | unique_by(.providerId + "|" + .modelId) | .[]' ${providerManifest})
+
+        if ! cmp -s "$pc" "$work"; then
+          mv -T "$work" "$pc"
+        else
+          rm -f "$work"
+        fi
+        mv -T "$new" "$sidecar"
+      }
       _zcode_providers_sync || echo "WARNING: zcode providers 注入失败,下次 switch 重试"
+      _zcode_reasoning_sync || echo "WARNING: zcode reasoning 注入失败,下次 switch 重试"
     '';
 
     # ── mcp 对账:~/.zcode/cli/config.json(与 providers 同 DAG 串行,同文件不同文件无冲突,

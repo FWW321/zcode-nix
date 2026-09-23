@@ -43,6 +43,21 @@ cat > "$HOME/.zcode/cli/config.json" <<'EOF'
   "stale-server": {"command": "y", "nixManaged": true}
 }}}
 EOF
+# reasoning 通道夹具:GUI 已有为 custom:demo/m1 写的 contextWindow(合并目标,
+# 必须保留);custom:stale2/old 是旧 nix 部署的孤儿规则(GC 目标,sidecar 记名)
+cat > "$HOME/.zcode/v2/provider_config.json" <<'EOF'
+{"schemaVersion": 1, "config": {
+  "modelConfigRules": {"providerModelRules": [
+    {"providerId": "custom:demo", "modelId": "m1",
+     "config": {"properties": {"contextWindow": 200000}}},
+    {"providerId": "custom:stale2", "modelId": "old",
+     "config": {"optionSpecs": {"reasoningLevel": {"values": ["x"], "map": "{}"}}}}
+  ], "manualProviderModelRules": []},
+  "providerConfigRules": {},
+  "providerOrder": []
+}}
+EOF
+printf 'custom:stale2|old\n' > "$HOME/.zcode/v2/provider_config.nix-managed"
 
 # 自写 desktop 文件双 fixture:死链(Exec 指向不存在的 store 路径,GC 目标)
 # 与活链(Exec 指向真实存在的文件,零接触)
@@ -112,11 +127,32 @@ grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "GUI 自建 agent �
 grep -q "^Exec=\"$live_exec\"" "$HOME/.local/share/applications/other.desktop" \
   || fail "非 zcode 的 desktop 文件被动了(清理必须只点名 zcode.desktop)"
 
+# ── 断言 3d:reasoning 双通道 ──
+pc="$HOME/.zcode/v2/provider_config.json"
+rule=$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:demo" and .modelId=="m1")' "$pc")
+[[ "$(jq -r '.config.optionSpecs.reasoningLevel.values | join(",")' <<<"$rule")" == "low,high" ]] \
+  || fail "agent 侧 reasoningLevel.values 未注入"
+[[ "$(jq -r '.config.optionSpecs.reasoningLevel.map' <<<"$rule")" == *reasoning_effort* ]] \
+  || fail "agent 侧 reasoningLevel.map 未注入"
+[[ "$(jq -r '.config.properties.contextWindow' <<<"$rule")" == "200000" ]] \
+  || fail "合并写入弄丢了 GUI 的 contextWindow"
+[[ "$(jq '[.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:stale2")] | length' "$pc")" == "0" ]] \
+  || fail "stale2 孤儿规则未被 GC"
+[[ "$(jq -c '.config.modelConfigRules.providerModelRules | length' "$pc")" == "1" ]] \
+  || fail "规则数异常(应只剩 demo/m1)"
+jq -e '.provider["custom:demo"].models.m1.reasoning
+       | .enabled == true and .variants == ["low","high"] and .defaultVariant == "high"' \
+  "$HOME/.zcode/v2/config.json" >/dev/null \
+  || fail "GUI 侧 reasoning variants 未注入"
+grep -qxF 'custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \
+  || fail "reasoning sidecar 未记名"
+
 # ── 断言 4:幂等(二跑零漂移)──
 # 同时覆盖正例:app 刚自注册的活链 zcode.desktop(Exec 指向真实路径),
 # 二跑必须零接触 —— 清理只杀死链,不与 app 的自管拉锯
 p1=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
 m1=$(md5sum "$HOME/.zcode/cli/config.json" | cut -d' ' -f1)
+r1=$(md5sum "$HOME/.zcode/v2/provider_config.json" | cut -d' ' -f1)
 cat > "$HOME/.local/share/applications/zcode.desktop" <<EOF
 [Desktop Entry]
 Exec="$validator" "--enable-features=WaylandWindowDecorations" %U
@@ -128,8 +164,10 @@ bash -euo pipefail "$mcp_script"
 bash -euo pipefail "$prune_script"
 p2=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
 m2=$(md5sum "$HOME/.zcode/cli/config.json" | cut -d' ' -f1)
+r2=$(md5sum "$HOME/.zcode/v2/provider_config.json" | cut -d' ' -f1)
 [[ "$p1" == "$p2" ]] || fail "providers 二跑漂移"
 [[ "$m1" == "$m2" ]] || fail "mcp 二跑漂移"
+[[ "$r1" == "$r2" ]] || fail "reasoning 二跑漂移"
 grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "二跑动了 GUI 文件"
 d2=$(md5sum "$HOME/.local/share/applications/zcode.desktop" | cut -d' ' -f1)
 [[ "$d1" == "$d2" ]] || fail "活链 zcode.desktop 二跑被动了(只该清理死链)"

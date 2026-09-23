@@ -111,6 +111,12 @@
                     models.m1 = {
                       context = 1000;
                       output = 100;
+                      # 覆盖 reasoning 双通道渲染(config.json variants +
+                      # provider_config.json optionSpecs values/map)
+                      reasoning = {
+                        levels = [ "low" "high" ];
+                        map = ''{"reasoning_effort": reasoningLevel}'';
+                      };
                     };
                   };
                   mcp.servers.echo = {
