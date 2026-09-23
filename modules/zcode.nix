@@ -333,8 +333,12 @@ let
           "model"
           "color"
           "thoughtLevel"
+          "permissionMode"
+          "memory"
           "tools"
           "disallowedTools"
+          "skills"
+          "background"
           "maxTurns"
           "injectAgentsMd"
           "mcpServers"
@@ -391,16 +395,50 @@ let
         default = null;
         description = "Preset color marker (asar-verified 26-value enum shared with the GUI picker).";
       };
-      thoughtLevel = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          Thinking effort; only effective with an explicit `model`. Kept a
-          free string on purpose: the set of valid levels is model-dependent
-          (GLM: low/high/max/nothink; GPT: low/medium/high/xhigh; DeepSeek V4:
-          high/max) — an enum here would wrongly reject valid combinations.
-        '';
-      };
+    thoughtLevel = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Thinking effort; only effective with an explicit `model`. Kept a
+        free string on purpose: the set of valid levels is model-dependent
+        (GLM: low/high/max/nothink; GPT: low/medium/high/xhigh; DeepSeek V4:
+        high/max) — an enum here would wrongly reject valid combinations.
+      '';
+    };
+    # 以下四项为 3.14.0 frontmatter schema 字段(开源源码 profile.ts:171-223 实证)
+    permissionMode = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "auto" "plan" ]);
+      default = null;
+      description = ''
+        Child-session permission mode. Only `auto` and `plan` are accepted
+        from agent markdown — upstream deliberately blocks `bypass`/`yolo`
+        escalation from repository-owned (project-level) definitions
+        (VALID_PERMISSION_MODES in core/src/subagent/profile.ts); this module
+        deploys user-level files only, which is the tier upstream trusts.
+      '';
+    };
+    memory = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "user" "project" "local" ]);
+      default = null;
+      description = ''
+        Persistent-memory scope for this subagent. Invalid values are
+        ignored by zcode (agent still loads, memory disabled) — here it is
+        a build-time enum instead, matching VALID_MEMORY_SCOPES.
+      '';
+    };
+    skills = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = ''
+        Skill names this subagent may use (exact match against the skill
+        registry). `null` inherits all available skills.
+      '';
+    };
+    background = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      description = "Whether this subagent runs in the background.";
+    };
       tools = lib.mkOption {
         type = lib.types.nullOr (lib.types.listOf toolName);
         default = null;

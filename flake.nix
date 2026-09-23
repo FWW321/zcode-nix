@@ -92,6 +92,11 @@
                   agents.robot = {
                     description = "dry-run fixture agent";
                     model = "custom:x:y";
+                    thoughtLevel = "high";
+                    permissionMode = "plan";
+                    memory = "user";
+                    skills = [ "fixture-skill" ];
+                    background = true;
                     prompt = "test body";
                   };
                   commands.hi = "say hi";
