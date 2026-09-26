@@ -43,7 +43,7 @@ imports = [ inputs.zcode-nix.homeManagerModules.zcode ];
 programs.zcode = {
   enable = true;
 
-  # ── 自定义供应商 → ~/.zcode/v2/config.json ──
+  # ── 自定义供应商 → ~/.zcode/v2/provider_config.json(GUI/agent 共同真源)──
   providers.minimax = {
     kind = "anthropic";           # 端点协议,见下表
     baseURL = "https://api.minimax.chat/v1";
@@ -88,7 +88,7 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 |---|---|---|
 | skills / AGENTS.md | `home.file` symlink | 只读资源,symlink 正常加载 |
 | agents / commands | activation 拷贝普通文件 | **加载器拒收 symlink**(A/B 实证:同内容 symlink 被静默忽略);`cmp` 对账,GUI 手改会被下次 switch 还原;`.nix-managed` sidecar 记名 GC,GUI 自建的文件永不触碰 |
-| providers / MCP | activation 对账注入 | `v2/config.json` 与 `cli/config.json` 是 GUI 活跃写区,整文件声明式会与 GUI 拉锯 → 只 upsert 带 `nixManaged` 标记的条目 + 回收已删除条目,`builtin:*` 槽位(oauth token 领地)与其余条目零接触 |
+| providers / MCP | activation 对账注入 | provider 真源是 `v2/provider_config.json`(GUI 面板与 agent 注册表共读;`v2/config.json` 的 provider 区是 legacy 死信层,仅在该文件不存在时被一次性迁移)与 `cli/config.json`(MCP),均为 GUI 活跃写区,整文件声明式会与 GUI 拉锯 → sidecar/nixManaged 记名只 upsert 自己的条目 + 回收已删除条目;GUI 停用意图(provider `enabled`)、`builtin:*` 槽位(oauth token 领地)与其余条目零接触 |
 
 ### 实测要点(3.8.1,均经 asar 源码或 A/B 验证)
 

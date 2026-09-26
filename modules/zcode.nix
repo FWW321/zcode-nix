@@ -15,13 +15,15 @@
 #   - providers/mcp 写入 GUI 活跃 JSON → activation 对账(见下)
 #
 # 与 programs.opencode 的本质差异(保留 activation 对账的原因):
-#   opencode.json 是纯声明式文件,上游模块可拥有整个文件;zcode 的
-#   v2/config.json 与 cli/config.json 是 GUI 活跃写区,整文件声明式会
-#   与 GUI 拉锯 → 对账注入(upsert 只管 nix 管辖条目):
-#     - 只 upsert nix 管辖条目(打 nixManaged 标记),其余键零接触
-#     - nixManaged 但已不在 options 的条目随 switch 整条回收(GC)
+#   opencode.json 是纯声明式文件,上游模块可拥有整个文件;zcode 的 provider
+#   真源 v2/provider_config.json 与 cli/config.json 是 GUI 活跃写区,整文件
+#   声明式会与 GUI 拉锯 → 对账注入(upsert 只管 nix 管辖条目):
+#     - provider 注入 providerRules/providerOrder/providerModelRules
+#       (sidecar 记名,见 syncZcodeProviders);v2/config.json 的 provider
+#       区是 legacy 死信层,旧方案的 nixManaged 条目随 switch 回收
+#     - mcp 写入 cli/config.json 的 mcp.servers(见下)
 #     - builtin:* 槽位绝不碰(oauth 派生 token 的领地,实测 2026-08-19)
-#     - 条目存在但无 nixManaged → GUI/用户所有,零接触
+#     - 条目存在但未被 sidecar/nixManaged 记名 → GUI/用户所有,零接触
 #
 # zcode 协议坑(asar 实证,2026-08-19):kind 决定请求路径——
 #   anthropic         → POST {baseURL}/v1/messages
@@ -60,50 +62,64 @@ let
   cfg = config.programs.zcode;
   jq = "${pkgs.jq}/bin/jq";
 
-  # ── providers:选项 → v2/config.json 对账 manifest ──
-  # 模型 reasoning 走双通道注入(GUI 与 agent 各读一处,源码实证 2026-09-22):
-  #   - v2/config.json models.<m>.reasoning {enabled,variants,defaultVariant}
-  #     → 桌面读取器(legacyZCodeConfigProviderReader)喂 GUI 模型选择器
-  #   - v2/provider_config.json config.modelConfigRules.providerModelRules 的
-  #     optionSpecs.reasoningLevel {values,map} → agent 直读该文件
-  #     (bootstrap auth-login.ts PERSONAL_PROVIDER_CONFIG_FILE_NAME),values
-  #     供 resolveRegistryThoughtLevel 校验档名,map 是 wire 翻译表达式
-  #     (compileModelOptionMaps)——没有它 agents 的 thoughtLevel 会被静默吞掉
+  # kind(模块词汇,按请求路径) → 上游 ModelProviderApiFormat
+  # (legacyModelProviderSerialized.ts resolveModelProviderApiFormat 的枚举)
+  apiTypeOfKind = {
+    anthropic = "anthropic-messages";
+    "openai-compatible" = "openai-chat-completions";
+    openai = "openai-responses";
+  };
+
+  # ── providers:选项 → v2/provider_config.json 对账 manifest ──
+  # 目标文件勘误(2026-09-22,开源源码实证):v2/config.json 的 provider 区是
+  # legacy 死信层——personal-provider-config-repository.ts #readLocked 仅在
+  # provider_config.json 不存在时跑一次性 importLegacy,此后 config.json
+  # 永不再读。GUI 面板/agent 注册表的真源是 provider_config.json:
+  #   - providerConfigRules.providerRules(显示条件 group=="standard-personal")
+  #   - providerOrder(appendCurrentProviderOrder 语义:去重后 append 末尾)
+  #   - modelConfigRules.providerModelRules(与迁移器 setExact 同层;
+  #     properties.contextWindow + optionSpecs.{reasoningLevel,maxOutputTokens})
+  # 注入形状对齐 createPersonalProviderConfig(legacy 迁移器)。
+  # 历史遗留条目(迁移器从旧 config.json 导出的)与注入同键无缝接管:
+  # 无 sidecar 记录 → GC 零接触;同 providerId → upsert 收编
   providerManifest = pkgs.writeText "zcode-provider-manifest.json" (builtins.toJSON (
     lib.mapAttrsToList (name: p: {
       id = "custom:${name}";
       secretFile = p.apiKeyFile;
-      template = {
-        inherit name;
-        inherit (p) kind;
-        options.baseURL = p.baseURL;
-        source = "custom";
-        models = lib.mapAttrs (
-          _: m:
-          {
-            limit = {
-              inherit (m) context;
-              inherit (m) output;
-            };
-          }
-          // (lib.optionalAttrs (m.reasoning != null) {
-            # values 末位即默认档(provider-registry-selection.ts 的
-            # toModelOption:defaultLevel = values.at(-1)),顺序有语义
-            reasoning = {
-              enabled = true;
-              variants = m.reasoning.levels;
-              defaultVariant = lib.last m.reasoning.levels;
-            };
-          })
-        ) p.models;
+      # apiKey 由 activation 渲染注入 access,不进 store
+      providerRule = {
+        providerId = "custom:${name}";
+        providerName = name;
+        config = {
+          group = "standard-personal";
+          access.type = "api-key";
+          api = {
+            type = apiTypeOfKind.${p.kind};
+            baseUrl = p.baseURL;
+          };
+          personalModelIds = lib.attrNames p.models;
+          modelOrder = lib.attrNames p.models;
+        };
       };
-      # agent 侧 personal 规则(与 template 分离:两者文件与 schema 都不同)
-      reasoningRules = lib.mapAttrsToList (mid: m: {
+      modelRules = lib.mapAttrsToList (mid: m: {
         providerId = "custom:${name}";
         modelId = mid;
-        inherit (m.reasoning) map;
-        values = m.reasoning.levels;
-      }) (lib.filterAttrs (_: m: m.reasoning != null) p.models);
+        config = {
+          properties.contextWindow = m.context;
+          # 注意 // 是浅合并:reasoning 分支必须与 maxOutputTokens 同层拼,
+          # 放到 config 层会整个顶掉 optionSpecs
+          optionSpecs = {
+            maxOutputTokens.max = m.output;
+          } // (lib.optionalAttrs (m.reasoning != null) {
+            # values 供 resolveRegistryThoughtLevel 校验档名;map 是 wire 翻译
+            # 表达式(compileModelOptionMaps)——缺任一 thoughtLevel 即被静默吞
+            reasoningLevel = {
+              inherit (m.reasoning) map;
+              values = m.reasoning.levels;
+            };
+          });
+        };
+      }) p.models;
     }) cfg.providers
   ));
 
@@ -649,15 +665,17 @@ in
       type = lib.types.attrsOf providerModule;
       default = { };
       description = ''
-        Custom model providers reconciled into `provider` of
-        {file}`~/.zcode/v2/config.json` as `custom:<name>` entries (upsert +
-        GC of nixManaged entries; `builtin:*` slots and GUI-owned entries are
-        never touched). Reconciled entries are fully nix-owned: GUI edits to
-        them are reverted on next switch; delete the entry and recreate it in
-        the GUI (without the `nixManaged` marker) to hand it over.
-        Models with `reasoning` set are additionally reconciled into
-        {file}`~/.zcode/v2/provider_config.json` personal rules (agent-side
-        thinking-level specs; sidecar-tracked, GUI fields preserved).
+        Custom model providers reconciled into
+        {file}`~/.zcode/v2/provider_config.json` — the live registry read by
+        both the GUI and the agent (the old `v2/config.json` provider section
+        is a legacy dead letter, only imported once when this file is absent).
+        Per provider: a `standard-personal` provider rule (+ providerOrder
+        registration) and per-model rules (context window, output cap,
+        optional thinking levels). Sidecar-named entries are fully nix-owned:
+        GUI edits revert on next switch (the GUI `enabled`/disabled flag is
+        preserved); remove the provider from nix to reclaim it, or keep a
+        GUI-created copy untouched by giving it another id. `builtin:*` and
+        GUI-created rules are never touched.
       '';
     };
   };
@@ -783,68 +801,20 @@ in
         || echo "WARNING: zcode commands 部署失败,下次 switch 重试"
     '';
 
-    # ── providers 对账:~/.zcode/v2/config.json ──
+    # ── providers 对账:~/.zcode/v2/provider_config.json(GUI/agent 共同真源)──
     home.activation.syncZcodeProviders = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      # 所有权:文件 schema strict 塞不了 nixManaged 标记 → sidecar
+      # (provider_config.nix-managed)记名:"P <providerId>" 为 provider 条目,
+      # "M <pid>|<mid>" 为模型规则(旧格式裸行按 M 处理)。sidecar 未记名的
+      # 条目(GUI 自建/legacy 迁移器产物)GC 零接触;同键则 upsert 收编:
+      # nix 管辖即 nix 全权,GUI 改动随 switch 还原,provider 级 enabled
+      # (GUI 停用意图)例外保留。
       _zcode_providers_sync() {
-        local cfg="''${HOME}/.zcode/v2/config.json"
-        [[ -f "$cfg" ]] || { echo "zcode: v2/config.json 不存在(应用未首启),跳过 providers 注入"; return 0; }
-
-        local work
-        work=$(mktemp "$cfg.nixXXXXXX") || return 1
-        cp "$cfg" "$work"
-
-        # GC:nixManaged 但已不在 options 的条目整条回收
-        # (注意 IN 写法:不能写 ($keep | index(.key)) —— pipe 上下文错位直接报错)
-        ${jq} --argjson keep "$(${jq} -c 'map(.id)' ${providerManifest})" \
-          '.provider |= ((. // {}) | with_entries(select((.value.nixManaged != true) or (.key | IN($keep[])))))' \
-          "$work" > "$work.tmp" && mv "$work.tmp" "$work"
-
-        local entry id sf key
-        while IFS= read -r entry; do
-          id=$(${jq} -r '.id' <<<"$entry")
-          sf=$(${jq} -r '.secretFile' <<<"$entry")
-          if [[ ! -r "$sf" ]]; then
-            echo "WARNING: zcode: secret $sf 不可读,跳过 $id(sops 未激活?)"
-            continue
-          fi
-          key=$(<"$sf")
-
-          if ${jq} -e --arg id "$id" '.provider[$id]' "$work" >/dev/null 2>&1 \
-            && ! ${jq} -e --arg id "$id" '(.provider[$id] // {}).nixManaged == true' "$work" >/dev/null; then
-            : # 条目存在但无 nixManaged 标记 → GUI/用户所有,完全不动
-          else
-            # 不存在,或 nixManaged=true → 整条按 manifest 重写(nix 管辖即 nix 全权,
-            # 漂移随 activation 自愈;GUI 改动会被 switch 还原,想自管就删条目重建)
-            ${jq} --arg id "$id" --arg key "$key" --argjson tmpl "$(${jq} '.template' <<<"$entry")" \
-              '.provider[$id] = ($tmpl + {
-                 nixManaged: true,
-                 options: ($tmpl.options + {apiKey: $key})
-               })' "$work" > "$work.tmp" && mv "$work.tmp" "$work"
-          fi
-        done < <(${jq} -c '.[]' ${providerManifest})
-
-        if ! cmp -s "$cfg" "$work"; then
-          mv -T "$work" "$cfg"
-        else
-          rm -f "$work"
-        fi
-      }
-
-      # ── reasoning 第二通道:agent 直读的 personal 规则(v2/provider_config.json)──
-      # 文件 schema 是 strict 的,不能在规则里塞 nixManaged 标记 → 所有权靠
-      # sidecar(provider_config.nix-managed)记 (providerId|modelId) 名单:
-      #   - upsert 只写 config.optionSpecs.reasoningLevel 子树,合并保留
-      #     规则里其余字段(GUI 写的 contextWindow 等)
-      #   - GC 只摘 sidecar 名单内、且已不在 options 的 reasoningLevel;
-      #     摘完 config 清空的规则整条回收(只可能由本模块创建),
-      #     仍有 GUI 字段的规则保留 —— GUI 产权零接触
-      #   - 不在 sidecar 的规则(GUI 自建)永不修改
-      _zcode_reasoning_sync() {
         local pc="''${HOME}/.zcode/v2/provider_config.json"
-        [[ -f "$pc" ]] || { echo "zcode: v2/provider_config.json 不存在(应用未首启),跳过 reasoning 注入"; return 0; }
+        [[ -f "$pc" ]] || { echo "zcode: v2/provider_config.json 不存在(应用未首启),跳过 providers 注入"; return 0; }
 
         local work
-        work=$(mktemp "$pc.nixrxXXXXXX") || return 1
+        work=$(mktemp "$pc.nixpcXXXXXX") || return 1
         cp "$pc" "$work"
 
         local sidecar="''${pc%.*}.nix-managed"
@@ -852,51 +822,97 @@ in
         : > "$new" || return 1
 
         # 当前名单先行落盘(GC 的 keep 集合)
-        local entry pid mid
+        local entry pid sf mid
         while IFS= read -r entry; do
-          printf '%s|%s\n' "$(${jq} -r '.providerId' <<<"$entry")" "$(${jq} -r '.modelId' <<<"$entry")" >> "$new"
-        done < <(${jq} -c '[.[] | .reasoningRules[]?] | unique_by(.providerId + "|" + .modelId) | .[]' ${providerManifest})
+          pid=$(${jq} -r '.id' <<<"$entry")
+          printf 'P %s\n' "$pid" >> "$new"
+          while IFS= read -r mid; do
+            printf 'M %s|%s\n' "$pid" "$mid" >> "$new"
+          done < <(${jq} -r '.modelRules[].modelId' <<<"$entry")
+        done < <(${jq} -c '.[]' ${providerManifest})
 
+        # GC:sidecar 记名但已不在 options → provider 条目连 order 摘除,
+        # 模型规则整条回收(upsert 是整条重写,规则内容即 nix 声明)
+        local line
         if [[ -f "$sidecar" ]]; then
-          while IFS='|' read -r pid mid; do
-            [[ -n "$pid" && -n "$mid" ]] || continue
-            grep -qxF "$pid|$mid" "$new" && continue
-            ${jq} --arg pid "$pid" --arg mid "$mid" '
-              .config.modelConfigRules.providerModelRules |= map(
-                if .providerId == $pid and .modelId == $mid then
-                  (del(.config.optionSpecs.reasoningLevel)
-                   | if .config == {} or .config == {optionSpecs:{}} then empty else . end)
-                else . end)' \
-              "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            if [[ "$line" == "P "* ]]; then
+              pid="''${line#P }"
+              grep -qxF "P $pid" "$new" && continue
+              ${jq} --arg pid "$pid" '
+                .config.providerConfigRules.providerRules |= map(select(.providerId != $pid))
+                | .config.providerOrder |= ((. // []) | map(select(. != $pid)))' \
+                "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+            else
+              pid="''${line#M }"; mid="''${pid#*|}"; pid="''${pid%%|*}"
+              grep -qxF "M $pid|$mid" "$new" && continue
+              ${jq} --arg pid "$pid" --arg mid "$mid" '
+                .config.modelConfigRules.providerModelRules |=
+                  map(select(.providerId != $pid or .modelId != $mid))' \
+                "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+            fi
           done < "$sidecar"
         fi
 
+        # upsert:providerRule(apiKey 由 secret 渲染)+ order append(去重后
+        # 末尾,appendCurrentProviderOrder 语义)+ 模型规则整条
+        local key
         while IFS= read -r entry; do
-          pid=$(${jq} -r '.providerId' <<<"$entry")
-          mid=$(${jq} -r '.modelId' <<<"$entry")
-          ${jq} --arg pid "$pid" --arg mid "$mid" \
-            --argjson vals "$(${jq} -c '.values' <<<"$entry")" \
-            --arg map "$(${jq} -r '.map' <<<"$entry")" '
-            .config.modelConfigRules.providerModelRules |= (
-              if any(.[]?; .providerId == $pid and .modelId == $mid) then
-                map(if .providerId == $pid and .modelId == $mid
-                    then .config.optionSpecs.reasoningLevel = {values: $vals, map: $map}
-                    else . end)
-              else
-                . + [{providerId: $pid, modelId: $mid, config: {optionSpecs: {reasoningLevel: {values: $vals, map: $map}}}}]
-              end)' \
+          pid=$(${jq} -r '.id' <<<"$entry")
+          sf=$(${jq} -r '.secretFile' <<<"$entry")
+          if [[ ! -r "$sf" ]]; then
+            echo "WARNING: zcode: secret $sf 不可读,跳过 $pid(sops 未激活?)"
+            continue
+          fi
+          key=$(<"$sf")
+
+          ${jq} --arg pid "$pid" --arg key "$key" --argjson rule "$(${jq} '.providerRule' <<<"$entry")" '
+            ($rule | .config.access.apiKey = $key) as $full
+            | .config.providerConfigRules.providerRules |= (
+                if any(.[]?; .providerId == $pid) then
+                  map(if .providerId == $pid
+                      then ((if has("enabled") then {enabled: .enabled} else {} end) + $full)
+                      else . end)
+                else . + [$full] end)
+            | .config.providerOrder |= ((. // []) | map(select(. != $pid)) + [$pid])' \
             "$work" > "$work.tmp" && mv "$work.tmp" "$work"
-        done < <(${jq} -c '[.[] | .reasoningRules[]?] | unique_by(.providerId + "|" + .modelId) | .[]' ${providerManifest})
+
+          while IFS= read -r mrule; do
+            ${jq} --argjson rule "$mrule" '
+              ($rule.providerId) as $pid | ($rule.modelId) as $mid
+              | .config.modelConfigRules.providerModelRules |= (
+                  if any(.[]?; .providerId == $pid and .modelId == $mid) then
+                    map(if .providerId == $pid and .modelId == $mid then $rule else . end)
+                  else . + [$rule] end)' \
+              "$work" > "$work.tmp" && mv "$work.tmp" "$work"
+          done < <(${jq} -c '.modelRules[]' <<<"$entry")
+        done < <(${jq} -c '.[]' ${providerManifest})
 
         if ! cmp -s "$pc" "$work"; then
           mv -T "$work" "$pc"
         else
           rm -f "$work"
         fi
+
+        # 死信层清尾:回收旧方案写进 config.json 的 nixManaged provider 条目
+        # (legacy 一次性迁移后该层不再被读;仅在本次注入成功后执行,
+        # GUI/builtin 条目零接触)
+        local cfg="''${HOME}/.zcode/v2/config.json"
+        if [[ -f "$cfg" ]]; then
+          local cwork
+          cwork=$(mktemp "$cfg.nixlgXXXXXX") || return 1
+          if ${jq} '.provider |= ((. // {}) | with_entries(select(.value.nixManaged != true)))' \
+            "$cfg" > "$cwork"; then
+            if ! cmp -s "$cfg" "$cwork"; then mv -T "$cwork" "$cfg"; else rm -f "$cwork"; fi
+          else
+            rm -f "$cwork"
+          fi
+        fi
+
         mv -T "$new" "$sidecar"
       }
       _zcode_providers_sync || echo "WARNING: zcode providers 注入失败,下次 switch 重试"
-      _zcode_reasoning_sync || echo "WARNING: zcode reasoning 注入失败,下次 switch 重试"
     '';
 
     # ── mcp 对账:~/.zcode/cli/config.json(与 providers 同 DAG 串行,同文件不同文件无冲突,

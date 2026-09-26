@@ -34,7 +34,7 @@ cat > "$HOME/.zcode/v2/config.json" <<'EOF'
 {"provider": {
   "builtin:zhipu": {"name": "GLM Coding", "apiKey": "oauth-token"},
   "custom:gui": {"name": "gui-owned"},
-  "custom:stale": {"name": "old nix entry", "nixManaged": true}
+  "custom:legacy-nix": {"name": "旧方案死信条目", "nixManaged": true}
 }}
 EOF
 cat > "$HOME/.zcode/cli/config.json" <<'EOF'
@@ -43,21 +43,31 @@ cat > "$HOME/.zcode/cli/config.json" <<'EOF'
   "stale-server": {"command": "y", "nixManaged": true}
 }}}
 EOF
-# reasoning 通道夹具:GUI 已有为 custom:demo/m1 写的 contextWindow(合并目标,
-# 必须保留);custom:stale2/old 是旧 nix 部署的孤儿规则(GC 目标,sidecar 记名)
+# providers 真源夹具:custom:gui 是 GUI 自建条目(零接触);
+# custom:stale 是旧 nix 部署(sidecar 记名,GC 目标:规则+order+模型规则)
 cat > "$HOME/.zcode/v2/provider_config.json" <<'EOF'
 {"schemaVersion": 1, "config": {
   "modelConfigRules": {"providerModelRules": [
-    {"providerId": "custom:demo", "modelId": "m1",
-     "config": {"properties": {"contextWindow": 200000}}},
-    {"providerId": "custom:stale2", "modelId": "old",
-     "config": {"optionSpecs": {"reasoningLevel": {"values": ["x"], "map": "{}"}}}}
+    {"providerId": "custom:gui", "modelId": "g1",
+     "config": {"properties": {"contextWindow": 300000}}},
+    {"providerId": "custom:stale", "modelId": "old",
+     "config": {"properties": {"contextWindow": 100}}}
   ], "manualProviderModelRules": []},
-  "providerConfigRules": {},
-  "providerOrder": []
+  "providerConfigRules": {"providerRules": [
+    {"providerId": "custom:gui", "providerName": "gui", "enabled": false,
+     "config": {"group": "standard-personal",
+                "access": {"type": "api-key", "apiKey": "gui-key"},
+                "api": {"type": "anthropic-messages", "baseUrl": "https://gui.test"},
+                "personalModelIds": ["g1"], "modelOrder": ["g1"]}},
+    {"providerId": "custom:stale", "providerName": "stale",
+     "config": {"group": "standard-personal",
+                "access": {"type": "api-key"},
+                "api": {"type": "openai-chat-completions", "baseUrl": "https://stale.test"}}}
+  ]},
+  "providerOrder": ["custom:gui", "custom:stale"]
 }}
 EOF
-printf 'custom:stale2|old\n' > "$HOME/.zcode/v2/provider_config.nix-managed"
+printf 'P custom:stale\nM custom:stale|old\n' > "$HOME/.zcode/v2/provider_config.nix-managed"
 
 # 自写 desktop 文件双 fixture:死链(Exec 指向不存在的 store 路径,GC 目标)
 # 与活链(Exec 指向真实存在的文件,零接触)
@@ -100,17 +110,53 @@ grep -qx 'robot.md' "$HOME/.zcode/agents/.nix-managed" || fail "sidecar 未记 r
 grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "GUI 自建 agent 被动了"
 ! grep -qx 'stale.md' "$HOME/.zcode/agents/.nix-managed" || fail "sidecar 仍记 stale.md"
 
-# ── 断言 3:providers 对账 ──
-[[ "$(jq -r '.provider["custom:demo"].options.apiKey' "$HOME/.zcode/v2/config.json")" == "k3y-xyz" ]] \
+# ── 断言 3:providers 对账(真源 provider_config.json)──
+pc="$HOME/.zcode/v2/provider_config.json"
+demo=$(jq -c '.config.providerConfigRules.providerRules[] | select(.providerId=="custom:demo")' "$pc")
+[[ "$(jq -r '.config.group' <<<"$demo")" == "standard-personal" ]] \
+  || fail "custom:demo 缺 standard-personal 分组(GUI 不显示)"
+[[ "$(jq -r '.config.access.apiKey' <<<"$demo")" == "k3y-xyz" ]] \
   || fail "custom:demo 未注入/secret 未渲染"
-[[ "$(jq -r '.provider["custom:demo"].nixManaged' "$HOME/.zcode/v2/config.json")" == "true" ]] \
-  || fail "custom:demo 缺 nixManaged 标记"
+[[ "$(jq -r '.config.api.type' <<<"$demo")" == "anthropic-messages" ]] \
+  || fail "kind→api.type 映射错误"
+[[ "$(jq -r '.config.api.baseUrl' <<<"$demo")" == "https://example.test/v1" ]] \
+  || fail "custom:demo baseUrl 未注入"
+[[ "$(jq -c '.config.personalModelIds' <<<"$demo")" == '["m1"]' ]] \
+  || fail "custom:demo personalModelIds 未注入"
+[[ "$(jq -c '.config.providerOrder' "$pc")" == '["custom:gui","custom:demo"]' ]] \
+  || fail "providerOrder 语义错误(stale 应摘除,demo 应 append 末尾)"
+gui=$(jq -c '.config.providerConfigRules.providerRules[] | select(.providerId=="custom:gui")' "$pc")
+[[ "$(jq -r '.config.access.apiKey' <<<"$gui")" == "gui-key" && "$(jq -r '.enabled' <<<"$gui")" == "false" ]] \
+  || fail "GUI 条目或其停用意图被动了"
+[[ "$(jq '[.config.providerConfigRules.providerRules[] | select(.providerId=="custom:stale")] | length' "$pc")" == "0" ]] \
+  || fail "stale providerRule 未被 GC"
+[[ "$(jq '[.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:stale")] | length' "$pc")" == "0" ]] \
+  || fail "stale 模型规则未被 GC"
+[[ "$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:gui") | .config.properties.contextWindow' "$pc")" == "300000" ]] \
+  || fail "GUI 模型规则被碰"
+
+# ── 断言 3b:模型规则(context/output/reasoning 一条龙)──
+m1=$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:demo" and .modelId=="m1")' "$pc")
+[[ "$(jq -r '.config.properties.contextWindow' <<<"$m1")" == "1000" ]] \
+  || fail "contextWindow 未注入"
+[[ "$(jq -r '.config.optionSpecs.maxOutputTokens.max' <<<"$m1")" == "100" ]] \
+  || fail "maxOutputTokens 未注入"
+[[ "$(jq -r '.config.optionSpecs.reasoningLevel.values | join(",")' <<<"$m1")" == "low,high" ]] \
+  || fail "reasoningLevel.values 未注入"
+[[ "$(jq -r '.config.optionSpecs.reasoningLevel.map' <<<"$m1")" == *reasoning_effort* ]] \
+  || fail "reasoningLevel.map 未注入"
+grep -qxF 'P custom:demo' "$HOME/.zcode/v2/provider_config.nix-managed" \
+  || fail "sidecar 未记 provider 名"
+grep -qxF 'M custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \
+  || fail "sidecar 未记模型规则名"
+
+# ── 断言 3c:死信层回收(config.json)──
+[[ "$(jq -r '.provider["custom:legacy-nix"] // "gone"' "$HOME/.zcode/v2/config.json")" == "gone" ]] \
+  || fail "config.json 旧 nixManaged 条目未回收"
 [[ "$(jq -r '.provider["builtin:zhipu"].apiKey' "$HOME/.zcode/v2/config.json")" == "oauth-token" ]] \
-  || fail "builtin 槽位被碰(oauth 领地)"
-[[ "$(jq -r '.provider["custom:gui"].nixManaged // "none"' "$HOME/.zcode/v2/config.json")" == "none" ]] \
-  || fail "GUI 条目被动了"
-[[ "$(jq -r '.provider["custom:stale"] // "gone"' "$HOME/.zcode/v2/config.json")" == "gone" ]] \
-  || fail "stale provider 未被 GC"
+  || fail "config.json builtin 槽位被碰"
+[[ "$(jq -r '.provider["custom:gui"].name' "$HOME/.zcode/v2/config.json")" == "gui-owned" ]] \
+  || fail "config.json GUI 条目被碰"
 
 # ── 断言 3b:mcp 对账 ──
 [[ "$(jq -r '.mcp.servers.echo.env.TOKEN' "$HOME/.zcode/cli/config.json")" == "k3y-xyz" ]] \
@@ -126,26 +172,6 @@ grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "GUI 自建 agent �
   || fail "死链 zcode.desktop 未被清理"
 grep -q "^Exec=\"$live_exec\"" "$HOME/.local/share/applications/other.desktop" \
   || fail "非 zcode 的 desktop 文件被动了(清理必须只点名 zcode.desktop)"
-
-# ── 断言 3d:reasoning 双通道 ──
-pc="$HOME/.zcode/v2/provider_config.json"
-rule=$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:demo" and .modelId=="m1")' "$pc")
-[[ "$(jq -r '.config.optionSpecs.reasoningLevel.values | join(",")' <<<"$rule")" == "low,high" ]] \
-  || fail "agent 侧 reasoningLevel.values 未注入"
-[[ "$(jq -r '.config.optionSpecs.reasoningLevel.map' <<<"$rule")" == *reasoning_effort* ]] \
-  || fail "agent 侧 reasoningLevel.map 未注入"
-[[ "$(jq -r '.config.properties.contextWindow' <<<"$rule")" == "200000" ]] \
-  || fail "合并写入弄丢了 GUI 的 contextWindow"
-[[ "$(jq '[.config.modelConfigRules.providerModelRules[] | select(.providerId=="custom:stale2")] | length' "$pc")" == "0" ]] \
-  || fail "stale2 孤儿规则未被 GC"
-[[ "$(jq -c '.config.modelConfigRules.providerModelRules | length' "$pc")" == "1" ]] \
-  || fail "规则数异常(应只剩 demo/m1)"
-jq -e '.provider["custom:demo"].models.m1.reasoning
-       | .enabled == true and .variants == ["low","high"] and .defaultVariant == "high"' \
-  "$HOME/.zcode/v2/config.json" >/dev/null \
-  || fail "GUI 侧 reasoning variants 未注入"
-grep -qxF 'custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \
-  || fail "reasoning sidecar 未记名"
 
 # ── 断言 4:幂等(二跑零漂移)──
 # 同时覆盖正例:app 刚自注册的活链 zcode.desktop(Exec 指向真实路径),
