@@ -150,6 +150,16 @@ grep -qxF 'P custom:demo' "$HOME/.zcode/v2/provider_config.nix-managed" \
 grep -qxF 'M custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \
   || fail "sidecar 未记模型规则名"
 
+# ── 断言 3d:key 轮换指纹 ──
+# key 轮换能触发 generation 变化的前提:指纹确实是 apiKeySource 内容的
+# sha256(夹具里 apiKeySource 与 apiKeyFile 同文件,故直接对 secretFile 求)
+manifest=$(grep -oE '/nix/store/[a-z0-9]+-zcode-provider-manifest\.json' \
+  "$providers_script" | head -n1 || true)
+[[ -n "$manifest" ]] || fail "渲染脚本里找不到 provider manifest"
+[[ "$(jq -r '.[0].keyFingerprint' "$manifest")" \
+     == "$(sha256sum "$(jq -r '.[0].secretFile' "$manifest")" | cut -d' ' -f1)" ]] \
+  || fail "keyFingerprint 不是 apiKeySource 内容的 sha256(key 轮换将不改 generation)"
+
 # ── 断言 3c:死信层回收(config.json)──
 [[ "$(jq -r '.provider["custom:legacy-nix"] // "gone"' "$HOME/.zcode/v2/config.json")" == "gone" ]] \
   || fail "config.json 旧 nixManaged 条目未回收"

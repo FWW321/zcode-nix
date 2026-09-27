@@ -48,6 +48,10 @@ programs.zcode = {
     kind = "anthropic";           # 端点协议,见下表
     baseURL = "https://api.minimax.chat/v1";
     apiKeyFile = "/run/secrets/minimax";   # 运行时读取,值不进 store
+    # 可选:换 key 后 sync 必重跑 —— 密文源的 sha256 指纹进 manifest,
+    # key 轮换 → HM generation 变 → home-manager-<user>.service 重启重跑
+    # sync(必须是密文文件,path 字面量会进 store;明文 key 绝不进)
+    # apiKeySource = ./secrets/minimax.sops.yaml;
     models.MiniMax-M3 = { context = 204800; output = 32768; };
   };
 
@@ -89,6 +93,8 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 | skills / AGENTS.md | `home.file` symlink | 只读资源,symlink 正常加载 |
 | agents / commands | activation 拷贝普通文件 | **加载器拒收 symlink**(A/B 实证:同内容 symlink 被静默忽略);`cmp` 对账,GUI 手改会被下次 switch 还原;`.nix-managed` sidecar 记名 GC,GUI 自建的文件永不触碰 |
 | providers / MCP | activation 对账注入 | provider 真源是 `v2/provider_config.json`(GUI 面板与 agent 注册表共读;`v2/config.json` 的 provider 区是 legacy 死信层,仅在该文件不存在时被一次性迁移)与 `cli/config.json`(MCP),均为 GUI 活跃写区,整文件声明式会与 GUI 拉锯 → sidecar/nixManaged 记名只 upsert 自己的条目 + 回收已删除条目;GUI 停用意图(provider `enabled`)、`builtin:*` 槽位(oauth token 领地)与其余条目零接触 |
+
+**key 轮换(换 key 后 "switch 一次不够" 的坑)**:`apiKeyFile` 是常量运行时路径,单换 key 不改变 HM generation → providers sync 不会重跑,`provider_config.json` 停留旧 key,且 sops 物化与 HM activation 之间没有顺序保证。给 provider 声明 `apiKeySource`(产生该 secret 的**密文**文件 path,如 sops 文件):其 sha256 作为非敏感指纹进入 manifest,key 轮换 → manifest/generation 变化 → `home-manager-<user>.service` 确定性重启并重跑 sync,读取已物化的新 key。明文 key 仍然只在 activation 时从 `apiKeyFile` 读取,绝不进 store。
 
 ### 实测要点(3.8.1,均经 asar 源码或 A/B 验证)
 

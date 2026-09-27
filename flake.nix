@@ -108,6 +108,9 @@
                     kind = "anthropic";
                     baseURL = "https://example.test/v1";
                     apiKeyFile = "${./tests/fixture-apikey}";
+                    # 指纹夹具:密文源替身(真实用法是 sops 文件 path);
+                    # 干跑测试断言 manifest 的 keyFingerprint == 其 sha256
+                    apiKeySource = ./tests/fixture-apikey;
                     models.m1 = {
                       context = 1000;
                       output = 100;

@@ -34,6 +34,12 @@
 # secret 约定:apiKeyFile / env.<k>.file / headers.<k>.file 一律为运行时
 # 可读的路径字符串(sops-nix / systemd-credentials 兼容),activation 时
 # 渲染,值不进 store。
+# key 轮换陷阱(2026-09-28 实测):apiKeyFile 是常量路径,单换 key 不改
+# HM generation → providers sync 不重跑,provider_config.json 停留旧 key
+# ("switch 一次不够")。providers.<name>.apiKeySource(密文源 path)的
+# sha256 作非敏感指纹进 manifest:轮换 → generation 变 →
+# home-manager-<user>.service 确定性重启重跑 sync,不再依赖 sops 物化
+# 与 activation 的先后(明文 key 仍绝不进 store)。
 #
 # 作用域(3.8.1 文档+asar 双证,2026-08-19):zcode 资源分用户级/工作区级两档,
 # 本模块只管用户级 —— 工作区配置的宿主是项目仓库(<项目>/.zcode/),生命周期
@@ -87,6 +93,11 @@ let
       id = "custom:${name}";
       secretFile = p.apiKeyFile;
       # apiKey 由 activation 渲染注入 access,不进 store
+      # keyFingerprint:apiKeySource(密文源)的 sha256,非敏感,但让
+      # manifest 从而 HM generation 随 key 轮换确定性变化,service 必重启
+      # 重跑 sync;空串 = 未声明指纹,行为与之前一致
+      keyFingerprint = lib.optionalString (p.apiKeySource != null)
+        (builtins.hashFile "sha256" p.apiKeySource);
       providerRule = {
         providerId = "custom:${name}";
         providerName = name;
@@ -378,6 +389,30 @@ let
         type = lib.types.str;
         description = "Path to a file containing the API key. Read at activation; the key never enters the store.";
         example = "/run/secrets/my_provider_key";
+      };
+      apiKeySource = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Eval-time source of the key material, as a path. MUST be
+          ciphertext (e.g. the sops/age-encrypted file that produces
+          {option}`apiKeyFile`) — never a plaintext key: path values are
+          copied into the store.
+
+          Its sha256 is embedded in the provider manifest as a
+          non-sensitive fingerprint, so rotating the key changes the
+          manifest, the Home Manager generation and thus
+          `home-manager-<user>.service`, which deterministically re-runs
+          the provider sync against the freshly materialized key (NixOS
+          switches run activation scripts — sops materialization — before
+          restarting changed units). Without it `apiKeyFile` is a constant
+          runtime path: key rotation leaves the generation byte-identical,
+          so nothing re-renders `provider_config.json` until an unrelated
+          config change does — the "switch twice" trap.
+
+          Granularity is the whole file: rotating other secrets in the
+          same sops file only costs one extra idempotent sync.
+        '';
       };
       models = lib.mkOption {
         type = lib.types.attrsOf providerModelModule;
