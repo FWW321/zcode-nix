@@ -149,6 +149,9 @@ m1=$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId==
 fmt=$(jq -c '.config.properties.inputFormat' <<<"$m1")
 [[ "$(jq -r '[.supportsImage == true, .supportsAudio == false, (has("supportsVideo") | not)] | all' <<<"$fmt")" == "true" ]] \
   || fail "inputFormat 未按 sparse 语义注入(已设键写值,未设键不得写)"
+props=$(jq -c '.config.properties' <<<"$m1")
+[[ "$(jq -r '[.supportsJsonSchemaOutput == true, (has("supportsNativeWebSearch") | not)] | all' <<<"$props")" == "true" ]] \
+  || fail "能力开关未按 sparse 语义注入(structuredOutput 写键,nativeWebSearch 未设不写)"
 grep -qxF 'P custom:demo' "$HOME/.zcode/v2/provider_config.nix-managed" \
   || fail "sidecar 未记 provider 名"
 grep -qxF 'M custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \

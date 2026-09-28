@@ -125,6 +125,8 @@
                         supportsImage = true;
                         supportsAudio = false;
                       };
+                      # 覆盖 properties 平层能力开关:nativeWebSearch 未设 → 键不写
+                      structuredOutput = true;
                     };
                   };
                   mcp.servers.echo = {

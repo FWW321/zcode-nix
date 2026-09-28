@@ -123,11 +123,17 @@ let
           providerId = "custom:${name}";
           modelId = mid;
           config = {
-            # 注意 // 是浅合并:fmt 与 contextWindow 都在 properties 平层拼;
+            # 注意 // 是浅合并:fmt 与能力开关都在 properties 平层拼;
             # reasoning 分支同理必须在 optionSpecs 层拼,放到 config 层会
             # 整个顶掉 optionSpecs
             properties = { contextWindow = m.context; }
-              // (lib.optionalAttrs (fmt != { }) { inputFormat = fmt; });
+              // (lib.optionalAttrs (fmt != { }) { inputFormat = fmt; })
+              // (lib.optionalAttrs (m.structuredOutput != null) {
+                supportsJsonSchemaOutput = m.structuredOutput;
+              })
+              // (lib.optionalAttrs (m.nativeWebSearch != null) {
+                supportsNativeWebSearch = m.nativeWebSearch;
+              });
             optionSpecs = {
               maxOutputTokens.max = m.output;
             } // (lib.optionalAttrs (m.reasoning != null) {
@@ -361,6 +367,27 @@ let
           unsupported kind are projected out of the request as placeholder
           text, so e.g. video input to a model without `supportsVideo`
           silently degrades instead of erroring.
+        '';
+      };
+      # properties 平层能力开关,与 inputFormat 同款 sparse 语义(null = 不写键)
+      structuredOutput = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = ''
+          Rendered into `properties.supportsJsonSchemaOutput`: gates
+          schema-constrained JSON output — requests carrying a response
+          JSON schema error out on models without the flag
+          (source-verified in model.ts).
+        '';
+      };
+      nativeWebSearch = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = ''
+          Rendered into `properties.supportsNativeWebSearch`: gates the
+          provider-native web-search tool (e.g. the Anthropic server-side
+          webSearch tool); without the flag a native WebSearch tool
+          request is rejected at the adapter layer.
         '';
       };
     };
