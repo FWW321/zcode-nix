@@ -90,9 +90,10 @@ if bash "$validator" "$bad" 2>/dev/null; then fail "validator 放行了缺 descr
 printf 'no frontmatter here\n' > "$bad"
 if bash "$validator" "$bad" 2>/dev/null; then fail "validator 放行了无 frontmatter"; fi
 
-# ── 按 DAG 顺序执行渲染后的 activation 脚本 ──
+# ── 按 DAG 顺序执行渲染后的 activation 脚本(providers 输出留底供告警断言)──
+warn1=$(mktemp)
 bash -euo pipefail "$agents_script"
-bash -euo pipefail "$providers_script"
+bash -euo pipefail "$providers_script" 2>&1 | tee "$warn1"
 bash -euo pipefail "$mcp_script"
 bash -euo pipefail "$prune_script"
 
@@ -145,6 +146,9 @@ m1=$(jq -c '.config.modelConfigRules.providerModelRules[] | select(.providerId==
   || fail "reasoningLevel.values 未注入"
 [[ "$(jq -r '.config.optionSpecs.reasoningLevel.map' <<<"$m1")" == *reasoning_effort* ]] \
   || fail "reasoningLevel.map 未注入"
+fmt=$(jq -c '.config.properties.inputFormat' <<<"$m1")
+[[ "$(jq -r '[.supportsImage == true, .supportsAudio == false, (has("supportsVideo") | not)] | all' <<<"$fmt")" == "true" ]] \
+  || fail "inputFormat 未按 sparse 语义注入(已设键写值,未设键不得写)"
 grep -qxF 'P custom:demo' "$HOME/.zcode/v2/provider_config.nix-managed" \
   || fail "sidecar 未记 provider 名"
 grep -qxF 'M custom:demo|m1' "$HOME/.zcode/v2/provider_config.nix-managed" \
@@ -159,6 +163,12 @@ manifest=$(grep -oE '/nix/store/[a-z0-9]+-zcode-provider-manifest\.json' \
 [[ "$(jq -r '.[0].keyFingerprint' "$manifest")" \
      == "$(sha256sum "$(jq -r '.[0].secretFile' "$manifest")" | cut -d' ' -f1)" ]] \
   || fail "keyFingerprint 不是 apiKeySource 内容的 sha256(key 轮换将不改 generation)"
+
+# ── 断言 3e:对账告警 ──
+# custom:demo 首跑必缺(夹具文件只有 gui/stale)→ 必须提示"已重建";
+# 干净状态不得误报"残留"(宁漏勿误报)
+grep -q '已重建' "$warn1" || fail "纳管条目缺失未告警重建(GUI 删/改名应提示)"
+! grep -q '残留' "$warn1" || fail "干净状态误报改名残留"
 
 # ── 断言 3c:死信层回收(config.json)──
 [[ "$(jq -r '.provider["custom:legacy-nix"] // "gone"' "$HOME/.zcode/v2/config.json")" == "gone" ]] \
@@ -184,6 +194,11 @@ grep -q "^Exec=\"$live_exec\"" "$HOME/.local/share/applications/other.desktop" \
   || fail "非 zcode 的 desktop 文件被动了(清理必须只点名 zcode.desktop)"
 
 # ── 断言 4:幂等(二跑零漂移)──
+# GUI 改名残留夹具先行注入:未记名规则 M1 与纳管 m1 大小写归一同形 →
+# 二跑应告警残留且零接触(md5 r1==r2 同时证明 M1 未被动、无对账漂移)
+t=$(mktemp)
+jq '.config.modelConfigRules.providerModelRules += [{"providerId": "custom:demo", "modelId": "M1", "config": {"properties": {"contextWindow": 1}}}]' \
+  "$pc" > "$t" && mv -T "$t" "$pc"
 # 同时覆盖正例:app 刚自注册的活链 zcode.desktop(Exec 指向真实路径),
 # 二跑必须零接触 —— 清理只杀死链,不与 app 的自管拉锯
 p1=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
@@ -194,8 +209,9 @@ cat > "$HOME/.local/share/applications/zcode.desktop" <<EOF
 Exec="$validator" "--enable-features=WaylandWindowDecorations" %U
 EOF
 d1=$(md5sum "$HOME/.local/share/applications/zcode.desktop" | cut -d' ' -f1)
+warn2=$(mktemp)
 bash -euo pipefail "$agents_script"
-bash -euo pipefail "$providers_script"
+bash -euo pipefail "$providers_script" 2>&1 | tee "$warn2"
 bash -euo pipefail "$mcp_script"
 bash -euo pipefail "$prune_script"
 p2=$(md5sum "$HOME/.zcode/v2/config.json" | cut -d' ' -f1)
@@ -204,6 +220,8 @@ r2=$(md5sum "$HOME/.zcode/v2/provider_config.json" | cut -d' ' -f1)
 [[ "$p1" == "$p2" ]] || fail "providers 二跑漂移"
 [[ "$m1" == "$m2" ]] || fail "mcp 二跑漂移"
 [[ "$r1" == "$r2" ]] || fail "reasoning 二跑漂移"
+grep -q 'M1' "$warn2" || fail "GUI 改名残留(同形异大小写)未告警"
+! grep -q '已重建' "$warn2" || fail "幂等重跑误报重建(条目已在文件中)"
 grep -q 'gui-body' "$HOME/.zcode/agents/gui-made.md" || fail "二跑动了 GUI 文件"
 d2=$(md5sum "$HOME/.local/share/applications/zcode.desktop" | cut -d' ' -f1)
 [[ "$d1" == "$d2" ]] || fail "活链 zcode.desktop 二跑被动了(只该清理死链)"

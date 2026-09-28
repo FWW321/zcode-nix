@@ -99,6 +99,7 @@ zcode 对 `~/.zcode/` 下资源的加载行为不同,模块按实测分流:
 ### 实测要点(3.8.1,均经 asar 源码或 A/B 验证)
 
 - **providers 的 `kind` 决定请求路径**:`anthropic` → `/v1/messages`;`openai-compatible` → `/chat/completions`;`openai` → `/responses`(OpenAI Responses API)。智谱 coding 端点错配 `openai` 会 404
+- **不要在 GUI 编辑/改名/删除 nix 注入的条目**:sidecar 记名的 provider/模型条目归 nix 全权,GUI 改动会在下次 switch 被还原,activation 会告警「已重建,换模型请改 nix 声明」;在 GUI 改名还会逃逸出对账、留下同名异大小写的残留条目(有告警提示,条目本身零接触)。换模型/改 id 一律改 nix 声明
 - **agent `model` 格式**:`custom:<URL 编码的 provider id>:<模型名>`,如 `custom:custom%3Amy-provider:My-Model`(`:` 编码为 `%3A`);配 `thoughtLevel` 时模型需有思考档元数据(custom 模型经 `providers.<name>.models.<m>.reasoning` 声明,内置 OAuth 槽位的 GLM 自带)
 - **agent frontmatter**:`name` + `description` 均必填,缺任一被**静默忽略**;`tools` 白名单一旦设置会连 MCP/技能工具一并禁掉
 - **作用域**:agents 仅用户级(设置页的工作区切换是共享控件残留);skills/commands/MCP 双作用域,工作区级归项目仓库(`<项目>/.zcode/`),不在本模块职责内

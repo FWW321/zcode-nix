@@ -120,6 +120,11 @@
                         levels = [ "low" "high" ];
                         map = ''{"reasoning_effort": reasoningLevel}'';
                       };
+                      # 覆盖 inputFormat sparse 注入:supportsVideo 未设 → 键不写
+                      inputFormat = {
+                        supportsImage = true;
+                        supportsAudio = false;
+                      };
                     };
                   };
                   mcp.servers.echo = {

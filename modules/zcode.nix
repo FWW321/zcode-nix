@@ -83,8 +83,9 @@ let
   # 永不再读。GUI 面板/agent 注册表的真源是 provider_config.json:
   #   - providerConfigRules.providerRules(显示条件 group=="standard-personal")
   #   - providerOrder(appendCurrentProviderOrder 语义:去重后 append 末尾)
-  #   - modelConfigRules.providerModelRules(与迁移器 setExact 同层;
-  #     properties.contextWindow + optionSpecs.{reasoningLevel,maxOutputTokens})
+#   - modelConfigRules.providerModelRules(与迁移器 setExact 同层;
+#     properties.{contextWindow,inputFormat} + optionSpecs.{reasoningLevel,
+#     maxOutputTokens})
   # 注入形状对齐 createPersonalProviderConfig(legacy 迁移器)。
   # 历史遗留条目(迁移器从旧 config.json 导出的)与注入同键无缝接管:
   # 无 sidecar 记录 → GC 零接触;同 providerId → upsert 收编
@@ -112,25 +113,34 @@ let
           modelOrder = lib.attrNames p.models;
         };
       };
-      modelRules = lib.mapAttrsToList (mid: m: {
-        providerId = "custom:${name}";
-        modelId = mid;
-        config = {
-          properties.contextWindow = m.context;
-          # 注意 // 是浅合并:reasoning 分支必须与 maxOutputTokens 同层拼,
-          # 放到 config 层会整个顶掉 optionSpecs
-          optionSpecs = {
-            maxOutputTokens.max = m.output;
-          } // (lib.optionalAttrs (m.reasoning != null) {
-            # values 供 resolveRegistryThoughtLevel 校验档名;map 是 wire 翻译
-            # 表达式(compileModelOptionMaps)——缺任一 thoughtLevel 即被静默吞
-            reasoningLevel = {
-              inherit (m.reasoning) map;
-              values = m.reasoning.levels;
-            };
-          });
-        };
-      }) p.models;
+      modelRules = lib.mapAttrsToList (mid: m:
+        let
+          # sparse 语义:inputFormat 未设的模态键不写 —— 上游
+          # modelInputFormatDataSchema 允许省键,省略即沿用该模态默认
+          fmt = lib.optionalAttrs (m.inputFormat != null)
+            (lib.filterAttrs (_: v: v != null) m.inputFormat);
+        in {
+          providerId = "custom:${name}";
+          modelId = mid;
+          config = {
+            # 注意 // 是浅合并:fmt 与 contextWindow 都在 properties 平层拼;
+            # reasoning 分支同理必须在 optionSpecs 层拼,放到 config 层会
+            # 整个顶掉 optionSpecs
+            properties = { contextWindow = m.context; }
+              // (lib.optionalAttrs (fmt != { }) { inputFormat = fmt; });
+            optionSpecs = {
+              maxOutputTokens.max = m.output;
+            } // (lib.optionalAttrs (m.reasoning != null) {
+              # values 供 resolveRegistryThoughtLevel 校验档名;map 是 wire 翻译
+              # 表达式(compileModelOptionMaps)——缺任一 thoughtLevel 即被静默吞
+              reasoningLevel = {
+                inherit (m.reasoning) map;
+                values = m.reasoning.levels;
+              };
+            });
+          };
+        }
+      ) p.models;
     }) cfg.providers
   ));
 
@@ -333,6 +343,26 @@ let
           (`v2/provider_config.json` `optionSpecs.reasoningLevel`).
         '';
       };
+      # 模态落点:上游 wire schema completeModelInputFormatDataSchema 五键
+      # 全 bool(supportsText/Image/Video/Audio/Pdf),规则层 sparse 允许省键;
+      # 本模块只开多模态三开关,text/pdf 沿用上游默认。运行时闸门是
+      # projectMessagesForInputFormat:不支持的模态块被替换成占位文本,
+      # 静默降级 —— 声明错了不会报错,只是输入悄悄变残
+      inputFormat = lib.mkOption {
+        type = lib.types.nullOr inputFormatModule;
+        default = null;
+        description = ''
+          Input-modality flags, rendered into `properties.inputFormat`
+          (schema-verified: upstream accepts five boolean keys
+          `supportsText`/`supportsImage`/`supportsVideo`/`supportsAudio`/
+          `supportsPdf` with per-key omission; this option exposes the three
+          modality switches, unset keys are simply not written). This is
+          the runtime gate for multimodal input: media blocks of an
+          unsupported kind are projected out of the request as placeholder
+          text, so e.g. video input to a model without `supportsVideo`
+          silently degrades instead of erroring.
+        '';
+      };
     };
   };
 
@@ -356,7 +386,33 @@ let
             OpenAI          : `{ "reasoning_effort": reasoningLevel }`
             OpenRouter      : `{ "reasoning": { "effort": reasoningLevel } }`
             boolean toggles : `{ "enable_thinking": reasoningLevel != "disabled" }`
+
+          Level-name coupling: when the expression branches on level names
+          (e.g. `if reasoningLevel == "high"`), those names must use exactly
+          the vocabulary of `levels` — the chosen level string is bound
+          verbatim, so a mismatched naming scheme never matches and the
+          patch silently never applies (field-verified 2026-09-28).
         '';
+      };
+    };
+  };
+
+  inputFormatModule = lib.types.submodule {
+    options = {
+      supportsImage = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Accept image inputs (`null` = key omitted, upstream default applies).";
+      };
+      supportsVideo = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Accept video inputs (Read-tool video branch, `video_url` wire format).";
+      };
+      supportsAudio = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Accept audio inputs.";
       };
     };
   };
@@ -891,7 +947,9 @@ in
         fi
 
         # upsert:providerRule(apiKey 由 secret 渲染)+ order append(去重后
-        # 末尾,appendCurrentProviderOrder 语义)+ 模型规则整条
+        # 末尾,appendCurrentProviderOrder 语义)+ 模型规则整条。
+        # 纳管条目在文件中缺失(GUI 删/改名过)→ 告警:已重建,指明正确路径
+        # (防 GUI 侧改出幽灵重复,2026-09-28 M3.1 事故)
         local key
         while IFS= read -r entry; do
           pid=$(${jq} -r '.id' <<<"$entry")
@@ -901,6 +959,12 @@ in
             continue
           fi
           key=$(<"$sf")
+
+          if ! ${jq} -e --arg pid "$pid" \
+            'any(.config.providerConfigRules.providerRules[]?; .providerId == $pid)' \
+            "$work" >/dev/null 2>&1; then
+            echo "WARNING: zcode: $pid 在文件中缺失(GUI 删/改名过?),已重建;换模型请改 nix 声明"
+          fi
 
           ${jq} --arg pid "$pid" --arg key "$key" --argjson rule "$(${jq} '.providerRule' <<<"$entry")" '
             ($rule | .config.access.apiKey = $key) as $full
@@ -914,6 +978,12 @@ in
             "$work" > "$work.tmp" && mv "$work.tmp" "$work"
 
           while IFS= read -r mrule; do
+            mid=$(${jq} -r '.modelId' <<<"$mrule")
+            if ! ${jq} -e --arg pid "$pid" --arg mid "$mid" \
+              'any(.config.modelConfigRules.providerModelRules[]?; .providerId == $pid and .modelId == $mid)' \
+              "$work" >/dev/null 2>&1; then
+              echo "WARNING: zcode: 模型规则 $pid|$mid 在文件中缺失(GUI 删/改名过?),已重建;换模型请改 nix 声明"
+            fi
             ${jq} --argjson rule "$mrule" '
               ($rule.providerId) as $pid | ($rule.modelId) as $mid
               | .config.modelConfigRules.providerModelRules |= (
@@ -923,6 +993,20 @@ in
               "$work" > "$work.tmp" && mv "$work.tmp" "$work"
           done < <(${jq} -c '.modelRules[]' <<<"$entry")
         done < <(${jq} -c '.[]' ${providerManifest})
+
+        # 残留探测:同 provider 下未纳管、与纳管 modelId 大小写归一后同形的
+        # 规则(GUI 改名逃逸出 upsert 的产物)。宁漏勿误报:仅精确同形(忽略
+        # 大小写)才告警,条目本身零接触
+        local rpid rmid ours
+        while IFS=$'\t' read -r rpid rmid; do
+          grep -qxF "M $rpid|$rmid" "$new" && continue
+          while IFS= read -r ours; do
+            if [[ "''${ours,,}" == "''${rmid,,}" ]]; then
+              echo "WARNING: zcode: $rpid 下未纳管模型规则 \"$rmid\" 与纳管 \"$ours\" 仅大小写不同(疑似 GUI 改名残留),零接触;如需收敛请在 GUI 删除或改 nix 声明"
+              break
+            fi
+          done < <(grep -F "M $rpid|" "$new" | cut -d'|' -f2-)
+        done < <(${jq} -r '.config.modelConfigRules.providerModelRules[]? | [.providerId, .modelId] | @tsv' "$work")
 
         if ! cmp -s "$pc" "$work"; then
           mv -T "$work" "$pc"
